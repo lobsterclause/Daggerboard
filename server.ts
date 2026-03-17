@@ -3,6 +3,9 @@ import { createServer } from 'http';
 import { Server } from 'socket.io';
 import cors from 'cors';
 import path from 'path';
+import { execSync } from 'child_process';
+import fs from 'fs';
+import os from 'os';
 import { initializeDatabase, storeTrace, getTraceHistory, getServiceTopology, getServiceStats, getErrorPatterns, getLatencyPercentiles } from './db.js';
 import { OTLPTraceData, Span } from './src/types.js';
 
@@ -15,17 +18,53 @@ async function startServer() {
 
   const PORT = parseInt(process.env.PORT || '3000', 10);
   const OTLP_PORT = parseInt(process.env.OTLP_PORT || '4318', 10);
-  const DB_PATH = process.env.DB_PATH || 'file://./daggerboard.db';
+  const DB_PATH = process.env.DB_PATH || 'mem://';
 
   // Middleware for OTLP JSON
   app.use(express.json({ limit: '50mb' }));
   app.use(cors());
 
   // Initialize database
-  await initializeDatabase(DB_PATH);
+  try {
+    await initializeDatabase(DB_PATH);
+  } catch (err) {
+    console.error('Database initialization error:', err);
+    process.exit(1);
+  }
 
   // In-memory trace storage (for real-time UI)
   const traces: any[] = [];
+
+  // Dagger setup helpers
+  const DAGGERBOARD_BLOCK_START = '# Daggerboard - auto-added';
+  const DAGGERBOARD_BLOCK_END   = '# End Daggerboard';
+  const SNIPPET = `${DAGGERBOARD_BLOCK_START}
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:${OTLP_PORT}
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
+export OTEL_EXPORTER_OTLP_TRACES_LIVE=1
+${DAGGERBOARD_BLOCK_END}`;
+
+  function getShellProfile() {
+    const shellBin = process.env.SHELL || '/bin/bash';
+    const home = os.homedir();
+    if (shellBin.endsWith('zsh'))  return { shell: 'zsh',  profilePath: path.join(home, '.zshrc') };
+    if (shellBin.endsWith('fish')) return { shell: 'fish', profilePath: path.join(home, '.config/fish/config.fish') };
+    return { shell: 'bash', profilePath: path.join(home, '.bashrc') };
+  }
+
+  function detectDagger() {
+    try {
+      const version = execSync('dagger version', { timeout: 3000 }).toString().trim();
+      return { installed: true, version };
+    } catch {
+      return { installed: false, version: null };
+    }
+  }
+
+  function profileContainsBlock(profilePath: string) {
+    if (!fs.existsSync(profilePath)) return false;
+    return fs.readFileSync(profilePath, 'utf8').includes(DAGGERBOARD_BLOCK_START);
+  }
 
   // Helper function to extract spans from OTLP data
   function extractSpans(traceData: OTLPTraceData): Span[] {
@@ -71,8 +110,7 @@ async function startServer() {
     try {
       const spans = extractSpans(traceData);
       if (spans.length > 0) {
-        // Add isOnCriticalPath flag (will be calculated by frontend for now)
-        await storeTrace(traceData, spans);
+        // await storeTrace(traceData, spans);
       }
     } catch (err) {
       console.error('Failed to store trace in database:', err);
@@ -90,6 +128,62 @@ async function startServer() {
     traces.length = 0;
     io.emit('clear_traces');
     res.status(200).send({});
+  });
+
+  // Dagger setup endpoints
+  app.get('/api/setup/dagger', (req, res) => {
+    const { shell, profilePath } = getShellProfile();
+    const { installed, version } = detectDagger();
+    const endpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT || '';
+    res.json({
+      installed,
+      version,
+      shell,
+      profilePath,
+      alreadyConfigured: endpoint.includes(`:${OTLP_PORT}`),
+      snippetApplied: profileContainsBlock(profilePath),
+      snippet: SNIPPET,
+    });
+  });
+
+  app.post('/api/setup/dagger/apply', (req, res) => {
+    const { profilePath } = getShellProfile();
+    try {
+      if (profileContainsBlock(profilePath)) {
+        return res.json({ success: true, profilePath, alreadyPresent: true });
+      }
+      const dir = path.dirname(profilePath);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.appendFileSync(profilePath, `\n${SNIPPET}\n`);
+      res.json({ success: true, profilePath, alreadyPresent: false });
+    } catch (err) {
+      res.status(500).json({ success: false, error: String(err) });
+    }
+  });
+
+  app.post('/api/setup/dagger/remove', (req, res) => {
+    const { profilePath } = getShellProfile();
+    try {
+      if (!fs.existsSync(profilePath)) {
+        return res.json({ success: true, profilePath });
+      }
+      const content = fs.readFileSync(profilePath, 'utf8');
+      const cleaned = content
+        .split('\n')
+        .reduce<{ lines: string[]; inBlock: boolean }>((acc, line) => {
+          if (line.trim() === DAGGERBOARD_BLOCK_START) return { ...acc, inBlock: true };
+          if (line.trim() === DAGGERBOARD_BLOCK_END)   return { ...acc, inBlock: false };
+          if (!acc.inBlock) acc.lines.push(line);
+          return acc;
+        }, { lines: [], inBlock: false })
+        .lines
+        .join('\n')
+        .replace(/\n{3,}/g, '\n\n');
+      fs.writeFileSync(profilePath, cleaned, 'utf8');
+      res.json({ success: true, profilePath });
+    } catch (err) {
+      res.status(500).json({ success: false, error: String(err) });
+    }
   });
 
   // Historical trace queries

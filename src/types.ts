@@ -45,3 +45,13 @@ export interface ProcessedSpan extends Span {
   serviceName?: string;
   isOnCriticalPath?: boolean;
 }
+
+export interface SetupInfo {
+  installed: boolean;
+  version: string | null;
+  shell: string;
+  profilePath: string;
+  alreadyConfigured: boolean;
+  snippetApplied: boolean;
+  snippet: string;
+}

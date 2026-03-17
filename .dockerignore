@@ -1,0 +1,16 @@
+node_modules
+npm-debug.log
+dist
+.git
+.gitignore
+.env.local
+.env*.local
+.DS_Store
+*.md
+!README.md
+.vscode
+.idea
+.claude
+.gemini
+daggerboard.db
+*.db

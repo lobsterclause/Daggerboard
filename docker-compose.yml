@@ -1,0 +1,54 @@
+version: '3.8'
+
+services:
+  surrealdb:
+    image: surrealdb/surrealdb:latest
+    container_name: daggerboard-db
+    ports:
+      - "8000:8000"
+    environment:
+      SURREAL_AUTH: true
+      SURREAL_USER: root
+      SURREAL_PASS: root
+    volumes:
+      - daggerboard-data:/data
+    command: start --log debug --auth --user root --pass root file:/data/daggerboard.db
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - daggerboard-network
+
+  daggerboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: daggerboard-app
+    ports:
+      - "3000:3000"
+      - "4318:4318"
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      OTLP_PORT: 4318
+      DB_PATH: ws://surrealdb:8000
+      SURREAL_HOST: surrealdb
+      SURREAL_PORT: 8000
+      SURREAL_USER: root
+      SURREAL_PASS: root
+    depends_on:
+      surrealdb:
+        condition: service_healthy
+    networks:
+      - daggerboard-network
+    restart: unless-stopped
+
+volumes:
+  daggerboard-data:
+    driver: local
+
+networks:
+  daggerboard-network:
+    driver: bridge

@@ -3,7 +3,7 @@ import { OTLPTraceData } from './src/types';
 
 let db: Surreal | null = null;
 
-export async function initializeDatabase(dbPath: string = 'file://./daggerboard.db') {
+export async function initializeDatabase(dbPath: string = 'mem://') {
   db = new Surreal();
   await db.connect(dbPath);
   await db.use({ namespace: 'daggerboard', database: 'traces' });
@@ -14,69 +14,98 @@ export async function initializeDatabase(dbPath: string = 'file://./daggerboard.
 async function initializeSchema() {
   if (!db) throw new Error('Database not initialized');
 
+  // Check if schema is already initialized
+  try {
+    const metadata = await db.query('SELECT * FROM _metadata WHERE key == "schema_version";') as any[];
+    if (metadata && metadata.length > 0 && metadata[0]?.result && metadata[0].result.length > 0) {
+      console.log('✓ Schema already initialized, skipping initialization');
+      return;
+    }
+  } catch (err) {
+    // Table doesn't exist yet, proceed with initialization
+    console.log('📦 Initializing new schema...');
+  }
+
   // Create traces table
   await db.query(`
-    DEFINE TABLE traces SCHEMAFULL;
-    DEFINE FIELD traceId ON traces TYPE string ASSERT string::len($value) > 0;
-    DEFINE FIELD startTime ON traces TYPE datetime;
-    DEFINE FIELD endTime ON traces TYPE datetime;
-    DEFINE FIELD durationMs ON traces TYPE number;
-    DEFINE FIELD status ON traces TYPE string ENUM ['success', 'error'];
-    DEFINE FIELD errorCount ON traces TYPE number DEFAULT 0;
-    DEFINE FIELD spanCount ON traces TYPE number DEFAULT 0;
-    DEFINE FIELD rootService ON traces TYPE string;
-    DEFINE FIELD services ON traces TYPE array DEFAULT [];
-    DEFINE INDEX idx_traceId ON traces COLUMNS traceId UNIQUE;
-    DEFINE INDEX idx_startTime ON traces COLUMNS startTime;
-    DEFINE INDEX idx_status ON traces COLUMNS status;
+    DEFINE TABLE IF NOT EXISTS traces SCHEMAFULL;
+    DEFINE FIELD IF NOT EXISTS traceId ON traces TYPE string ASSERT string::len($value) > 0;
+    DEFINE FIELD IF NOT EXISTS startTime ON traces TYPE datetime;
+    DEFINE FIELD IF NOT EXISTS endTime ON traces TYPE datetime;
+    DEFINE FIELD IF NOT EXISTS durationMs ON traces TYPE number;
+    DEFINE FIELD IF NOT EXISTS status ON traces TYPE string ENUM ['success', 'error'];
+    DEFINE FIELD IF NOT EXISTS errorCount ON traces TYPE number DEFAULT 0;
+    DEFINE FIELD IF NOT EXISTS spanCount ON traces TYPE number DEFAULT 0;
+    DEFINE FIELD IF NOT EXISTS rootService ON traces TYPE string;
+    DEFINE FIELD IF NOT EXISTS services ON traces TYPE array DEFAULT [];
+    DEFINE INDEX IF NOT EXISTS idx_traceId ON traces COLUMNS traceId UNIQUE;
+    DEFINE INDEX IF NOT EXISTS idx_startTime ON traces COLUMNS startTime;
+    DEFINE INDEX IF NOT EXISTS idx_status ON traces COLUMNS status;
   `);
 
   // Create spans table
   await db.query(`
-    DEFINE TABLE spans SCHEMAFULL;
-    DEFINE FIELD spanId ON spans TYPE string ASSERT string::len($value) > 0;
-    DEFINE FIELD traceId ON spans TYPE string;
-    DEFINE FIELD parentSpanId ON spans TYPE string OPTION;
-    DEFINE FIELD serviceName ON spans TYPE string;
-    DEFINE FIELD spanName ON spans TYPE string;
-    DEFINE FIELD kind ON spans TYPE number;
-    DEFINE FIELD startTime ON spans TYPE datetime;
-    DEFINE FIELD endTime ON spans TYPE datetime;
-    DEFINE FIELD durationMs ON spans TYPE number;
-    DEFINE FIELD status ON spans TYPE string ENUM ['success', 'error'];
-    DEFINE FIELD attributes ON spans TYPE object DEFAULT {};
-    DEFINE FIELD isOnCriticalPath ON spans TYPE bool DEFAULT false;
-    DEFINE INDEX idx_spanId ON spans COLUMNS spanId UNIQUE;
-    DEFINE INDEX idx_traceId ON spans COLUMNS traceId;
-    DEFINE INDEX idx_serviceName ON spans COLUMNS serviceName;
-    DEFINE INDEX idx_startTime ON spans COLUMNS startTime;
+    DEFINE TABLE IF NOT EXISTS spans SCHEMAFULL;
+    DEFINE FIELD IF NOT EXISTS spanId ON spans TYPE string ASSERT string::len($value) > 0;
+    DEFINE FIELD IF NOT EXISTS traceId ON spans TYPE string;
+    DEFINE FIELD IF NOT EXISTS parentSpanId ON spans TYPE string OPTION;
+    DEFINE FIELD IF NOT EXISTS serviceName ON spans TYPE string;
+    DEFINE FIELD IF NOT EXISTS spanName ON spans TYPE string;
+    DEFINE FIELD IF NOT EXISTS kind ON spans TYPE number;
+    DEFINE FIELD IF NOT EXISTS startTime ON spans TYPE datetime;
+    DEFINE FIELD IF NOT EXISTS endTime ON spans TYPE datetime;
+    DEFINE FIELD IF NOT EXISTS durationMs ON spans TYPE number;
+    DEFINE FIELD IF NOT EXISTS status ON spans TYPE string ENUM ['success', 'error'];
+    DEFINE FIELD IF NOT EXISTS attributes ON spans TYPE object DEFAULT {};
+    DEFINE FIELD IF NOT EXISTS isOnCriticalPath ON spans TYPE bool DEFAULT false;
+    DEFINE INDEX IF NOT EXISTS idx_spanId ON spans COLUMNS spanId UNIQUE;
+    DEFINE INDEX IF NOT EXISTS idx_traceId ON spans COLUMNS traceId;
+    DEFINE INDEX IF NOT EXISTS idx_serviceName ON spans COLUMNS serviceName;
+    DEFINE INDEX IF NOT EXISTS idx_startTime ON spans COLUMNS startTime;
   `);
 
   // Create services table
   await db.query(`
-    DEFINE TABLE services SCHEMAFULL;
-    DEFINE FIELD name ON services TYPE string ASSERT string::len($value) > 0;
-    DEFINE FIELD firstSeen ON services TYPE datetime;
-    DEFINE FIELD lastSeen ON services TYPE datetime;
-    DEFINE FIELD traceCount ON services TYPE number DEFAULT 0;
-    DEFINE FIELD errorCount ON services TYPE number DEFAULT 0;
-    DEFINE FIELD avgDurationMs ON services TYPE number DEFAULT 0;
-    DEFINE INDEX idx_name ON services COLUMNS name UNIQUE;
+    DEFINE TABLE IF NOT EXISTS services SCHEMAFULL;
+    DEFINE FIELD IF NOT EXISTS name ON services TYPE string ASSERT string::len($value) > 0;
+    DEFINE FIELD IF NOT EXISTS firstSeen ON services TYPE datetime;
+    DEFINE FIELD IF NOT EXISTS lastSeen ON services TYPE datetime;
+    DEFINE FIELD IF NOT EXISTS traceCount ON services TYPE number DEFAULT 0;
+    DEFINE FIELD IF NOT EXISTS errorCount ON services TYPE number DEFAULT 0;
+    DEFINE FIELD IF NOT EXISTS avgDurationMs ON services TYPE number DEFAULT 0;
+    DEFINE INDEX IF NOT EXISTS idx_name ON services COLUMNS name UNIQUE;
   `);
 
   // Create service_calls table
   await db.query(`
-    DEFINE TABLE service_calls SCHEMAFULL;
-    DEFINE FIELD fromService ON service_calls TYPE string;
-    DEFINE FIELD toService ON service_calls TYPE string;
-    DEFINE FIELD callCount ON service_calls TYPE number DEFAULT 1;
-    DEFINE FIELD errorCount ON service_calls TYPE number DEFAULT 0;
-    DEFINE FIELD lastObserved ON service_calls TYPE datetime;
-    DEFINE FIELD avgDurationMs ON service_calls TYPE number DEFAULT 0;
-    DEFINE INDEX idx_from_to ON service_calls COLUMNS fromService, toService UNIQUE;
-    DEFINE INDEX idx_from ON service_calls COLUMNS fromService;
-    DEFINE INDEX idx_to ON service_calls COLUMNS toService;
+    DEFINE TABLE IF NOT EXISTS service_calls SCHEMAFULL;
+    DEFINE FIELD IF NOT EXISTS fromService ON service_calls TYPE string;
+    DEFINE FIELD IF NOT EXISTS toService ON service_calls TYPE string;
+    DEFINE FIELD IF NOT EXISTS callCount ON service_calls TYPE number DEFAULT 1;
+    DEFINE FIELD IF NOT EXISTS errorCount ON service_calls TYPE number DEFAULT 0;
+    DEFINE FIELD IF NOT EXISTS lastObserved ON service_calls TYPE datetime;
+    DEFINE FIELD IF NOT EXISTS avgDurationMs ON service_calls TYPE number DEFAULT 0;
+    DEFINE INDEX IF NOT EXISTS idx_from_to ON service_calls COLUMNS fromService, toService UNIQUE;
+    DEFINE INDEX IF NOT EXISTS idx_from ON service_calls COLUMNS fromService;
+    DEFINE INDEX IF NOT EXISTS idx_to ON service_calls COLUMNS toService;
   `);
+
+  // Create metadata table for tracking schema version
+  await db.query(`
+    DEFINE TABLE IF NOT EXISTS _metadata SCHEMAFULL;
+    DEFINE FIELD IF NOT EXISTS key ON _metadata TYPE string;
+    DEFINE FIELD IF NOT EXISTS value ON _metadata TYPE any;
+    DEFINE FIELD IF NOT EXISTS updatedAt ON _metadata TYPE datetime DEFAULT time::now();
+    DEFINE INDEX IF NOT EXISTS idx_metadata_key ON _metadata COLUMNS key UNIQUE;
+  `);
+
+  // Set schema version metadata
+  await db.query(`
+    UPSERT INTO _metadata (key, value, updatedAt) VALUES ('schema_version', '1.0', time::now());
+    UPSERT INTO _metadata (key, value, updatedAt) VALUES ('initialized_at', time::now(), time::now());
+  `);
+
+  console.log('✓ Schema initialized successfully');
 }
 
 export async function storeTrace(traceData: OTLPTraceData, spans: Array<any>) {

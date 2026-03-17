@@ -1,1 +1,60 @@
 @import "tailwindcss";
+
+@theme {
+  --color-obsidian: #0B0C10;
+  --color-slate-deep: #1F2833;
+  --color-cyan-vibrant: #66FCF1;
+  --color-teal-muted: #45A29E;
+  --color-slate-light: #C5C6C7;
+  
+  --font-inter: "Inter", sans-serif;
+}
+
+@layer base {
+  body {
+    @apply bg-obsidian text-slate-light font-inter antialiased selection:bg-cyan-vibrant selection:text-obsidian;
+  }
+}
+
+@layer components {
+  .glass {
+    @apply bg-white/5 backdrop-blur-md border border-white/10 shadow-xl;
+  }
+  
+  .glass-dark {
+    @apply bg-black/40 backdrop-blur-xl border border-white/5 shadow-2xl;
+  }
+
+  .glow-cyan {
+    @apply shadow-[0_0_15px_rgba(102,252,241,0.3)] border-cyan-vibrant/40;
+  }
+
+  .glow-red {
+    @apply shadow-[0_0_15px_rgba(239,68,68,0.3)] border-red-500/40;
+  }
+
+  .glow-blue {
+    @apply shadow-[0_0_15px_rgba(59,130,246,0.3)] border-blue-500/40;
+  }
+
+  /* Custom scrollbar for premium feel */
+  ::-webkit-scrollbar {
+    @apply w-1.5 h-1.5;
+  }
+  ::-webkit-scrollbar-track {
+    @apply bg-transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-white/10 rounded-full hover:bg-white/20 transition-colors;
+  }
+}
+
+/* Animations */
+@keyframes pulse-glow {
+  0%, 100% { opacity: 0.8; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.05); }
+}
+
+.animate-pulse-glow {
+  animation: pulse-glow 2s infinite ease-in-out;
+}

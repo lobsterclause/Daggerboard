@@ -1,11 +1,13 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { io } from 'socket.io-client';
 import { OTLPTraceData, Span, ProcessedSpan } from './types';
-import { Activity, Clock, Server, Play, RotateCcw, Trash2, AlertCircle, X, Search, Monitor, Cpu, Database, ArrowRightLeft, Layers, Share2, Flame, Download } from 'lucide-react';
+import { Activity, Clock, Server, Play, RotateCcw, Trash2, AlertCircle, X, Search, Monitor, Cpu, Database, ArrowRightLeft, Layers, Share2, Flame, Download, Terminal, ChevronDown, ChevronUp, LayoutGrid, BarChart3, Settings } from 'lucide-react';
 import { ServiceGraph } from './components/ServiceGraph';
 import { FlameGraph } from './components/FlameGraph';
 import { TraceScatterPlot } from './components/TraceScatterPlot';
+import { DaggerSetup } from './components/DaggerSetup';
 import { format } from 'date-fns';
+import { extractSpans, buildSpanTree } from './utils';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
@@ -53,239 +55,118 @@ function getServiceColorClass(serviceName: string | undefined): string {
   return SERVICE_COLOR_CLASSES[Math.abs(hash) % SERVICE_COLOR_CLASSES.length];
 }
 
-// Helper to parse OTLP JSON into a flat list of spans
-function extractSpans(traceData: OTLPTraceData): Span[] {
-  const spans: Span[] = [];
-  if (!traceData.resourceSpans) return spans;
-  
-  for (const rs of traceData.resourceSpans) {
-    let serviceName = 'unknown-service';
-    if (rs.resource?.attributes) {
-      const svcAttr = rs.resource.attributes.find((a: any) => a.key === 'service.name');
-      if (svcAttr) serviceName = String(svcAttr.value?.stringValue || svcAttr.value);
-    }
-    
-    if (!rs.scopeSpans) continue;
-    for (const ss of rs.scopeSpans) {
-      if (!ss.spans) continue;
-      // Inject service name into span attributes if not present
-      const enrichedSpans = ss.spans.map(span => {
-        const hasService = span.attributes?.some(a => a.key === 'service.name');
-        if (!hasService) {
-          return {
-            ...span,
-            attributes: [...(span.attributes || []), { key: 'service.name', value: serviceName }]
-          };
-        }
-        return span;
-      });
-      spans.push(...enrichedSpans);
-    }
-  }
-  return spans;
-}
+// getServiceColor is exported for use in components
 
-// Build a tree of spans
-function buildSpanTree(spans: Span[]): ProcessedSpan[] {
-  const spanMap = new Map<string, ProcessedSpan>();
-  const roots: ProcessedSpan[] = [];
-
-  // First pass: create ProcessedSpan objects
-  for (const span of spans) {
-    const startTimeMs = Number(BigInt(span.startTimeUnixNano) / 1000000n);
-    const endTimeMs = Number(BigInt(span.endTimeUnixNano) / 1000000n);
-    
-    let serviceName = 'unknown-service';
-    const svcAttr = span.attributes?.find(a => a.key === 'service.name');
-    if (svcAttr) serviceName = String(svcAttr.value?.stringValue || svcAttr.value);
-    
-    spanMap.set(span.spanId, {
-      ...span,
-      children: [],
-      startTimeMs,
-      endTimeMs,
-      durationMs: endTimeMs - startTimeMs,
-      serviceName,
-      hasErrorDescendant: false,
-      isOnCriticalPath: false,
-    });
-  }
-
-  // Second pass: build tree
-  for (const span of spanMap.values()) {
-    if (span.parentSpanId && spanMap.has(span.parentSpanId)) {
-      spanMap.get(span.parentSpanId)!.children.push(span);
-    } else {
-      roots.push(span);
-    }
-  }
-
-  // Sort children by start time and compute hasErrorDescendant & isOnCriticalPath
-  const processTree = (nodes: ProcessedSpan[]): boolean => {
-    nodes.sort((a, b) => a.startTimeMs - b.startTimeMs);
-    let anyError = false;
-    
-    // Find child with maximum duration to mark as critical path
-    let maxDurChild: ProcessedSpan | null = null;
-    let maxDur = -1;
-
-    for (const node of nodes) {
-      if (node.durationMs > maxDur) {
-        maxDur = node.durationMs;
-        maxDurChild = node;
-      }
-      
-      const childrenHasError = processTree(node.children);
-      node.hasErrorDescendant = childrenHasError;
-      if (node.status?.code === 2 || childrenHasError) {
-        anyError = true;
-      }
-    }
-    
-    if (maxDurChild) {
-        maxDurChild.isOnCriticalPath = true;
-    }
-
-    return anyError;
-  };
-  
-  processTree(roots);
-  
-  // Mark roots as critical path by default if they are the longest
-  let maxRoot: ProcessedSpan | null = null;
-  let maxRootDur = -1;
-  roots.forEach(r => {
-      if (r.durationMs > maxRootDur) {
-          maxRootDur = r.durationMs;
-          maxRoot = r;
-      }
-  });
-  if (maxRoot) (maxRoot as ProcessedSpan).isOnCriticalPath = true;
-
-  return roots;
-}
-
-function SpanNode({ span, depth, selectedSpanId, onSelect, traceDurationMs, traceStartTimeMs }: { key?: string | number, span: ProcessedSpan, depth: number, selectedSpanId: string | null, onSelect: (span: ProcessedSpan) => void, traceDurationMs: number, traceStartTimeMs: number }) {
+function SpanNode({ span, depth, selectedSpanId, onSelect, traceDurationMs, traceStartTimeMs }: { span: ProcessedSpan, depth: number, selectedSpanId: string | null, onSelect: (span: ProcessedSpan) => void, traceDurationMs: number, traceStartTimeMs: number, key?: string }) {
   const [expanded, setExpanded] = useState(true);
   const hasChildren = span.children.length > 0;
   
   const isSelected = selectedSpanId === span.spanId;
-  const isError = span.status?.code === 2; // OTLP Error code is 2
+  const isError = span.status?.code === 2;
   const hasErrorDescendant = span.hasErrorDescendant;
 
-  // Map OTLP SpanKind to icons and colors
-  // 1: INTERNAL, 2: SERVER, 3: CLIENT, 4: PRODUCER, 5: CONSUMER
   const getKindDetails = (kind: number) => {
     switch (kind) {
       case 2: // SERVER
         return { icon: <Server size={14} />, color: "text-blue-400", bg: "bg-blue-500/10 border-blue-500/20" };
       case 3: // CLIENT
-        return { icon: <Monitor size={14} />, color: "text-emerald-400", bg: "bg-emerald-500/10 border-emerald-500/20" };
+        return { icon: <Monitor size={14} />, color: "text-cyan-400", bg: "bg-cyan-500/10 border-cyan-500/20" };
       case 4: // PRODUCER
         return { icon: <ArrowRightLeft size={14} />, color: "text-amber-400", bg: "bg-amber-500/10 border-amber-500/20" };
       case 5: // CONSUMER
         return { icon: <Database size={14} />, color: "text-purple-400", bg: "bg-purple-500/10 border-purple-500/20" };
-      case 1: // INTERNAL
       default:
-        return { icon: <Cpu size={14} />, color: "text-slate-400", bg: "bg-slate-800/50 border-slate-700/50" };
+        return { icon: <Cpu size={14} />, color: "text-slate-400", bg: "bg-white/5 border-white/10" };
     }
   };
 
   const kindDetails = getKindDetails(span.kind);
 
-  // Extract key attributes for inline badges
   const inlineAttributes = [];
   if (span.attributes) {
     const httpMethod = span.attributes.find(a => a.key === 'http.method')?.value?.stringValue || span.attributes.find(a => a.key === 'http.method')?.value;
     const httpStatus = span.attributes.find(a => a.key === 'http.status_code')?.value?.intValue || span.attributes.find(a => a.key === 'http.status_code')?.value;
     const httpTarget = span.attributes.find(a => a.key === 'http.target' || a.key === 'url.path')?.value?.stringValue || span.attributes.find(a => a.key === 'http.target' || a.key === 'url.path')?.value;
-    const rpcMethod = span.attributes.find(a => a.key === 'rpc.method')?.value?.stringValue || span.attributes.find(a => a.key === 'rpc.method')?.value;
-    const dbSystem = span.attributes.find(a => a.key === 'db.system')?.value?.stringValue || span.attributes.find(a => a.key === 'db.system')?.value;
-    const messagingSystem = span.attributes.find(a => a.key === 'messaging.system')?.value?.stringValue || span.attributes.find(a => a.key === 'messaging.system')?.value;
 
     if (httpMethod) inlineAttributes.push({ label: httpMethod, color: 'text-blue-400 bg-blue-500/10 border-blue-500/20' });
     if (httpStatus) {
       const statusNum = Number(httpStatus);
-      const statusColor = statusNum >= 500 ? 'text-red-400 bg-red-500/10 border-red-500/20' : 
-                          statusNum >= 400 ? 'text-amber-400 bg-amber-500/10 border-amber-500/20' : 
-                          'text-emerald-400 bg-emerald-500/10 border-emerald-500/20';
+      const statusColor = statusNum >= 500 ? 'text-red-400 bg-red-500/5 border-red-500/20' : 
+                          statusNum >= 400 ? 'text-orange-400 bg-orange-500/5 border-orange-500/20' : 
+                          'text-emerald-400 bg-emerald-500/5 border-emerald-500/20';
       inlineAttributes.push({ label: httpStatus, color: statusColor });
     }
-    if (httpTarget) inlineAttributes.push({ label: httpTarget, color: 'text-slate-400 bg-slate-800/30 border-slate-700/30' });
-    if (rpcMethod) inlineAttributes.push({ label: rpcMethod, color: 'text-indigo-400 bg-indigo-500/10 border-indigo-500/20' });
-    if (dbSystem) inlineAttributes.push({ label: dbSystem, color: 'text-purple-400 bg-purple-500/10 border-purple-500/20' });
-    if (messagingSystem) inlineAttributes.push({ label: messagingSystem, color: 'text-cyan-400 bg-cyan-500/10 border-cyan-500/20' });
+    if (httpTarget && typeof httpTarget === 'string') {
+      const shortTarget = httpTarget.length > 20 ? '...' + httpTarget.slice(-20) : httpTarget;
+      inlineAttributes.push({ label: shortTarget, color: 'text-slate-400 bg-white/5 border-white/10' });
+    }
   }
 
-  // Calculate proportional bar
   const leftPercent = traceDurationMs > 0 ? ((span.startTimeMs - traceStartTimeMs) / traceDurationMs) * 100 : 0;
   const widthPercent = traceDurationMs > 0 ? Math.max((span.durationMs / traceDurationMs) * 100, 0.5) : 100;
 
   return (
-    <div className="font-mono text-sm relative">
+    <div className="font-sans text-sm relative">
       <div 
         className={cn(
-          "flex items-center py-1.5 px-2 cursor-pointer hover:bg-slate-800/50 transition-colors border-l-2 group relative overflow-hidden",
-          isSelected ? "bg-slate-800 border-blue-500" : "border-transparent",
+          "flex items-center py-2 px-3 cursor-pointer transition-all border-l-2 group relative overflow-hidden my-0.5 rounded-sm",
+          isSelected ? "bg-white/10 border-cyan-vibrant shadow-sm" : "border-transparent hover:bg-white/5",
           isError && !isSelected ? "border-red-500/50" : "",
-          !isError && hasErrorDescendant && !isSelected ? "border-red-500/30 border-dashed" : "", // Error propagation trail
-          span.isOnCriticalPath && !isSelected ? "shadow-[0_0_15px_rgba(59,130,246,0.1)] border-blue-500/30" : "",
-          (span as any).isHighlighted ? "bg-blue-500/10 ring-1 ring-blue-500/30 shadow-[0_0_10px_rgba(59,130,246,0.1)]" : ""
+          !isError && hasErrorDescendant && !isSelected ? "border-red-500/30 border-dashed" : "",
+          span.isOnCriticalPath && !isSelected ? "border-blue-500/30" : ""
         )}
-        style={{ paddingLeft: `${depth * 16 + 8}px` }}
+        style={{ paddingLeft: `${depth * 20 + 12}px` }}
         onClick={() => onSelect(span)}
       >
-        {/* Proportional Duration Bar */}
+        {/* Background duration indicators */}
         <div 
           className="absolute inset-y-0 bg-white/5 pointer-events-none"
           style={{ left: `${leftPercent}%`, width: `${widthPercent}%` }}
         />
-        <div 
-          className="absolute bottom-0 h-0.5 bg-blue-500/30 pointer-events-none"
-          style={{ left: `${leftPercent}%`, width: `${widthPercent}%` }}
-        />
-
-        <div className="w-4 h-4 mr-1 flex items-center justify-center opacity-50 group-hover:opacity-100 transition-opacity relative z-10" onClick={(e) => {
+        
+        <div className="w-4 h-4 mr-2 flex items-center justify-center transition-transform hover:scale-125 relative z-10" onClick={(e) => {
           if (hasChildren) {
             e.stopPropagation();
             setExpanded(!expanded);
           }
         }}>
           {hasChildren && (
-            <span className="text-xs">{expanded ? '▼' : '▶'}</span>
+            <span className={cn("text-[8px] transition-transform duration-300", expanded ? "rotate-90" : "")}>▶</span>
           )}
         </div>
         
         <div className={cn(
-          "flex items-center justify-center w-5 h-5 rounded border mr-2 shrink-0 relative z-10",
+          "flex items-center justify-center w-6 h-6 rounded-lg border mr-3 shrink-0 relative z-10 transition-transform group-hover:scale-110",
           kindDetails.bg,
           kindDetails.color
-        )} title={`Kind: ${span.kind}`}>
+        )}>
           {kindDetails.icon}
         </div>
 
         <div className={cn(
-          "flex-1 flex items-center gap-1.5 min-w-0 relative z-10",
-          isError ? "text-red-400" : "text-slate-200"
+          "flex-1 flex items-center gap-2 min-w-0 relative z-10",
+          isError ? "text-red-400" : "text-white"
         )}>
-          {isError && <AlertCircle size={14} className="text-red-500 shrink-0" />}
-          <span className="truncate font-medium">{span.name}</span>
+          <span className="truncate font-bold tracking-tight">{span.name}</span>
           
-          {/* Inline Attribute Badges */}
-          {inlineAttributes.map((attr, i) => (
-            <span key={i} className={cn("px-1.5 py-0.5 rounded text-[10px] border shrink-0", attr.color)}>
-              {String(attr.label)}
-            </span>
-          ))}
+          <div className="flex gap-1.5 overflow-hidden">
+            {inlineAttributes.map((attr, i) => (
+              <span key={i} className={cn("px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-tighter border shrink-0", attr.color)}>
+                {String(attr.label)}
+              </span>
+            ))}
+          </div>
         </div>
         
-        <div className="text-slate-500 text-xs ml-4 whitespace-nowrap tabular-nums relative z-10">
-          {span.durationMs < 1 ? '<1ms' : `${span.durationMs.toFixed(0)}ms`}
+        <div className="text-slate-500 text-[10px] font-black ml-4 whitespace-nowrap tabular-nums relative z-10 opacity-60 group-hover:opacity-100 transition-opacity">
+          {span.durationMs < 1 ? '<1ms' : `${span.durationMs.toFixed(1)}ms`}
         </div>
       </div>
       
       {expanded && hasChildren && (
-        <div>
+        <div className="relative">
+          {/* Vertical line connector */}
+          <div className="absolute left-[21px] top-0 bottom-1 w-px bg-white/5 pointer-events-none" style={{ left: `${depth * 20 + 20}px` }} />
           {span.children.map(child => (
             <SpanNode 
               key={child.spanId} 
@@ -304,7 +185,6 @@ function SpanNode({ span, depth, selectedSpanId, onSelect, traceDurationMs, trac
 }
 
 function Timeline({ roots, selectedSpanId, onSelect }: { roots: ProcessedSpan[], selectedSpanId: string | null, onSelect: (span: ProcessedSpan) => void }) {
-  // Find global min/max time
   let minTime = Infinity;
   let maxTime = 0;
   
@@ -319,7 +199,6 @@ function Timeline({ roots, selectedSpanId, onSelect }: { roots: ProcessedSpan[],
   
   const totalDuration = maxTime - minTime;
   
-  // Flatten tree for timeline
   const flatNodes: { span: ProcessedSpan, depth: number }[] = [];
   const flatten = (nodes: ProcessedSpan[], depth: number) => {
     for (const node of nodes) {
@@ -329,74 +208,58 @@ function Timeline({ roots, selectedSpanId, onSelect }: { roots: ProcessedSpan[],
   };
   flatten(roots, 0);
 
-  if (flatNodes.length === 0) return <div className="p-4 text-slate-500">No timeline data</div>;
+  if (flatNodes.length === 0) return <EmptyState />;
 
   return (
-    <div className="overflow-x-auto overflow-y-auto h-full bg-slate-900/50 p-4">
-      <div className="min-w-[800px]">
-        {/* Header / Ruler */}
-        <div className="flex border-b border-slate-800 pb-2 mb-2 text-xs text-slate-500 relative h-6">
-          <div className="absolute left-0">0ms</div>
-          <div className="absolute right-0">{totalDuration.toFixed(0)}ms</div>
+    <div className="p-6">
+      <div className="min-w-full">
+        <div className="flex border-b border-white/5 pb-4 mb-6 text-[10px] font-black uppercase tracking-widest text-slate-500 relative h-8">
+          <div className="absolute left-0">Start</div>
+          <div className="absolute left-1/4">25%</div>
+          <div className="absolute left-1/2 -translate-x-1/2">50%</div>
+          <div className="absolute left-3/4">75%</div>
+          <div className="absolute right-0">{totalDuration.toFixed(1)}ms</div>
+          
+          {[0.25, 0.5, 0.75].map(p => (
+            <div key={p} className="absolute top-6 bottom-0 w-px bg-white/5" style={{ left: `${p * 100}%`, height: '1000%' }} />
+          ))}
         </div>
         
-        {/* Rows */}
-        <div className="space-y-1">
+        <div className="space-y-2">
           {flatNodes.map(({ span, depth }) => {
             const leftPercent = totalDuration > 0 ? ((span.startTimeMs - minTime) / totalDuration) * 100 : 0;
-            const widthPercent = totalDuration > 0 ? Math.max((span.durationMs / totalDuration) * 100, 0.5) : 100;
+            const widthPercent = totalDuration > 0 ? Math.max((span.durationMs / totalDuration) * 100, 0.3) : 100;
             const isError = span.status?.code === 2;
             const isSelected = selectedSpanId === span.spanId;
+            const color = isError ? '#f87171' : getServiceColor(span.serviceName);
             
             return (
               <div 
                 key={span.spanId} 
                 className={cn(
-                  "relative h-6 flex items-center group cursor-pointer rounded",
-                  isSelected ? "bg-slate-800" : "hover:bg-slate-800/50"
+                  "relative h-8 flex items-center group cursor-pointer transition-all",
+                  isSelected ? "bg-white/5 rounded-xl shadow-inner shadow-black/20" : "hover:bg-white/5 rounded-xl"
                 )}
                 onClick={() => onSelect(span)}
               >
-                {/* Timeline Bar */}
                 <div 
                   className={cn(
-                    "absolute h-4 rounded-sm transition-all group/bar",
-                    isError ? "bg-red-500/80" : "",
-                    isSelected ? "ring-1 ring-white" : ""
+                    "absolute h-1.5 rounded-full transition-all group-hover:h-3 shadow-lg",
+                    isSelected ? "ring-2 ring-white/20" : ""
                   )}
                   style={{ 
                     left: `${leftPercent}%`, 
                     width: `${widthPercent}%`,
-                    minWidth: '2px',
-                    opacity: isError ? 1 : 0.8,
-                    backgroundColor: isError ? undefined : getServiceColor(span.serviceName)
+                    backgroundColor: color,
+                    boxShadow: `0 0 12px ${color}40`
                   }}
-                >
-                  {/* Tooltip */}
-                  <div className="absolute bottom-full mb-1 left-1/2 -translate-x-1/2 hidden group-hover/bar:flex flex-col items-center z-50 pointer-events-none">
-                    <div className="bg-[#111218] text-slate-200 text-xs rounded py-1.5 px-2.5 shadow-xl border border-slate-800 whitespace-nowrap">
-                      <div className="font-medium text-slate-100 flex items-center gap-1.5">
-                        <span className={cn("w-1.5 h-1.5 rounded-full", isError ? "bg-red-500" : "")} style={{ backgroundColor: isError ? undefined : getServiceColor(span.serviceName) }} />
-                        {span.name}
-                      </div>
-                      <div className="text-slate-400 mt-1 flex items-center justify-between gap-4">
-                        <span>{span.serviceName || 'unknown'}</span>
-                      </div>
-                      <div className="text-slate-400 mt-1 flex items-center justify-between gap-4">
-                        <span>{span.durationMs < 1 ? '<1ms' : `${span.durationMs.toFixed(2)} ms`}</span>
-                        <span className={isError ? "text-red-400" : "text-emerald-400"}>{isError ? 'Error' : 'Success'}</span>
-                      </div>
-                    </div>
-                    <div className="w-2 h-2 bg-[#111218] border-r border-b border-slate-800 rotate-45 -mt-1.5"></div>
-                  </div>
-                </div>
+                />
                 
-                {/* Label (shows on hover or if enough space) */}
                 <div 
-                  className="absolute text-xs text-white px-2 truncate pointer-events-none z-10 drop-shadow-md"
-                  style={{ left: `${leftPercent}%`, paddingLeft: widthPercent > 10 ? '4px' : 'calc(100% + 4px)' }}
+                  className="absolute text-[10px] font-bold text-white px-2 truncate pointer-events-none z-10 opacity-0 group-hover:opacity-100 transition-opacity"
+                  style={{ left: `${leftPercent}%`, marginLeft: widthPercent > 10 ? '4px' : 'calc(100% + 8px)' }}
                 >
-                  {span.name}
+                  {span.name} <span className="opacity-50 ml-1">{span.durationMs.toFixed(1)}ms</span>
                 </div>
               </div>
             );
@@ -408,115 +271,93 @@ function Timeline({ roots, selectedSpanId, onSelect }: { roots: ProcessedSpan[],
 }
 
 function SpanDetails({ span, onClose }: { span: ProcessedSpan | null, onClose: () => void }) {
-  if (!span) {
-    return null;
-  }
+  if (!span) return null;
 
   const isError = span.status?.code === 2;
 
   return (
-    <div className="h-full flex flex-col">
-      <div className="flex items-center justify-between p-4 border-b border-slate-800 shrink-0">
-        <h2 className="text-xl font-semibold text-white flex items-center gap-2">
-          {isError && <span className="w-2 h-2 rounded-full bg-red-500" />}
-          {span.name}
-        </h2>
+    <div className="h-full flex flex-col font-sans">
+      <div className="flex items-center justify-between p-6 border-b border-white/5 shrink-0 bg-white/5">
+        <div className="flex flex-col gap-1">
+          <div className="flex items-center gap-3">
+             <div className={cn("w-2 h-2 rounded-full animate-pulse", isError ? "bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.5)]" : "bg-cyan-vibrant shadow-[0_0_8px_rgba(102,252,241,0.5)]")} />
+             <h2 className="text-xl font-black tracking-tight text-white uppercase">{span.name}</h2>
+          </div>
+          <span className="text-[10px] font-mono text-slate-500 flex items-center gap-2">
+             {span.spanId} <span className="opacity-30">|</span> {span.traceId}
+          </span>
+        </div>
         <div className="flex items-center gap-2">
-          <button 
-            onClick={() => {
-              const blob = new Blob([JSON.stringify(span, null, 2)], { type: 'application/json' });
-              const url = URL.createObjectURL(blob);
-              const a = document.createElement('a');
-              a.href = url;
-              a.download = `trace-${span.traceId}-span-${span.spanId}.json`;
-              a.click();
-              URL.revokeObjectURL(url);
-            }}
-            className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded transition-colors"
-            title="Download Span JSON"
-          >
-            <Download size={18} />
-          </button>
-          <button 
-            onClick={onClose}
-            className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded transition-colors"
-            title="Close details"
-          >
-            <X size={18} />
+          <button onClick={onClose} className="p-3 text-slate-400 hover:text-white hover:bg-white/5 rounded-2xl transition-all active:scale-90">
+            <X size={20} />
           </button>
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-4 space-y-6">
-        <div>
-          <div className="text-sm text-slate-400 font-mono">
-            ID: {span.spanId}
+      <div className="flex-1 overflow-y-auto p-8 space-y-10 custom-scrollbar">
+        <div className="grid grid-cols-2 gap-6">
+          <div className="glass p-6 rounded-3xl border border-white/10">
+            <div className="text-[10px] text-slate-500 mb-2 uppercase font-black tracking-widest">Duration</div>
+            <div className="text-2xl text-cyan-vibrant font-black tracking-tighter">
+              {span.durationMs.toFixed(3)} <span className="text-xs font-normal opacity-50">ms</span>
+            </div>
+          </div>
+          <div className="glass p-6 rounded-3xl border border-white/10">
+            <div className="text-[10px] text-slate-500 mb-2 uppercase font-black tracking-widest">Timestamp</div>
+            <div className="text-lg text-white font-bold tracking-tight">
+              {format(new Date(span.startTimeMs), 'HH:mm:ss.SSS')}
+            </div>
           </div>
         </div>
 
-        <div className="grid grid-cols-2 gap-4">
-        <div className="bg-slate-900/50 p-3 rounded-lg border border-slate-800">
-          <div className="text-xs text-slate-500 mb-1 uppercase tracking-wider">Duration</div>
-          <div className="text-lg text-slate-200 font-mono">
-            {span.durationMs.toFixed(2)} ms
-          </div>
-        </div>
-        <div className="bg-slate-900/50 p-3 rounded-lg border border-slate-800">
-          <div className="text-xs text-slate-500 mb-1 uppercase tracking-wider">Start Time</div>
-          <div className="text-sm text-slate-200 font-mono">
-            {format(new Date(span.startTimeMs), 'HH:mm:ss.SSS')}
-          </div>
-        </div>
-      </div>
-
-      {span.attributes && span.attributes.length > 0 && (
-        <div>
-          <h3 className="text-sm font-medium text-slate-300 mb-2 uppercase tracking-wider">Attributes</h3>
-          <div className="bg-slate-900/50 rounded-lg border border-slate-800 overflow-hidden">
-            <table className="w-full text-sm text-left">
-              <tbody className="divide-y divide-slate-800/50">
-                {span.attributes.map((attr, i) => (
-                  <tr key={i} className="hover:bg-slate-800/30">
-                    <td className="py-2 px-3 font-mono text-slate-400 w-1/3 break-all">{attr.key}</td>
-                    <td className="py-2 px-3 font-mono text-slate-200 break-all">
-                      {typeof attr.value === 'object' ? JSON.stringify(attr.value) : String(attr.value)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
-      {span.events && span.events.length > 0 && (
-        <div>
-          <h3 className="text-sm font-medium text-slate-300 mb-2 uppercase tracking-wider">Logs / Events</h3>
-          <div className="space-y-2">
-            {span.events.map((event, i) => {
-              const eventTimeMs = Number(BigInt(event.timeUnixNano) / 1000000n);
-              return (
-                <div key={i} className="bg-slate-900/50 p-3 rounded-lg border border-slate-800 font-mono text-sm">
-                  <div className="text-slate-500 text-xs mb-1">
-                    {format(new Date(eventTimeMs), 'HH:mm:ss.SSS')}
+        {span.attributes && span.attributes.length > 0 && (
+          <div>
+            <h3 className="text-xs font-black text-slate-400 mb-4 uppercase tracking-[0.2em] flex items-center gap-2">
+               <Layers size={14}/> Attributes
+            </h3>
+            <div className="glass rounded-3xl border border-white/5 overflow-hidden">
+               {span.attributes.map((attr, i) => (
+                  <div key={i} className="flex px-5 py-3.5 border-b border-white/5 last:border-0 hover:bg-white/5 transition-colors group">
+                     <div className="w-1/3 font-mono text-[11px] text-slate-500 break-all">{attr.key}</div>
+                     <div className="flex-1 font-mono text-xs text-white break-all bg-black/20 p-2 rounded-lg border border-white/5 group-hover:border-white/10 transition-colors">
+                        {typeof attr.value === 'object' ? JSON.stringify(attr.value, null, 2) : String(attr.value)}
+                     </div>
                   </div>
-                  <div className="text-slate-200 mb-2">{event.name}</div>
-                  {event.attributes && event.attributes.length > 0 && (
-                    <div className="pl-4 border-l-2 border-slate-800 space-y-1 mt-2">
-                      {event.attributes.map((attr, j) => (
-                        <div key={j} className="flex text-xs">
-                          <span className="text-slate-500 mr-2">{attr.key}:</span>
-                          <span className="text-slate-300">{typeof attr.value === 'object' ? JSON.stringify(attr.value) : String(attr.value)}</span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
+               ))}
+            </div>
           </div>
-        </div>
-      )}
+        )}
+
+        {span.events && span.events.length > 0 && (
+          <div>
+            <h3 className="text-xs font-black text-slate-400 mb-4 uppercase tracking-[0.2em] flex items-center gap-2">
+               <Activity size={14}/> Events
+            </h3>
+            <div className="space-y-4">
+              {span.events.map((event, i) => {
+                const eventTimeMs = Number(BigInt(event.timeUnixNano) / 1000000n);
+                return (
+                  <div key={i} className="glass p-5 rounded-3xl border border-white/5 relative overflow-hidden">
+                    <div className="flex items-center justify-between mb-3">
+                       <span className="text-[10px] font-black text-cyan-vibrant/60 uppercase tracking-widest">{event.name}</span>
+                       <span className="text-[10px] font-mono text-slate-500">{format(new Date(eventTimeMs), 'HH:mm:ss.SSS')}</span>
+                    </div>
+                    {event.attributes && event.attributes.length > 0 && (
+                      <div className="space-y-2 mt-4 pl-4 border-l-2 border-white/5">
+                        {event.attributes.map((attr, j) => (
+                          <div key={j} className="flex flex-col gap-1">
+                            <span className="text-[10px] text-slate-500 uppercase font-bold">{attr.key}</span>
+                            <span className="text-xs text-slate-300 font-mono bg-black/40 p-2 rounded-xl">{String(attr.value)}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -525,7 +366,6 @@ function SpanDetails({ span, onClose }: { span: ProcessedSpan | null, onClose: (
 function TraceGroup({ traceId, roots, activeTab, selectedSpanId, onSelect }: { traceId: string, roots: ProcessedSpan[], activeTab: string, selectedSpanId: string | null, onSelect: (span: ProcessedSpan) => void }) {
   const [expanded, setExpanded] = useState(true);
 
-  // Calculate summary
   let minStartTime = Infinity;
   let maxEndTime = -Infinity;
   let hasError = false;
@@ -548,11 +388,8 @@ function TraceGroup({ traceId, roots, activeTab, selectedSpanId, onSelect }: { t
 
   roots.forEach(traverse);
   const durationMs = maxEndTime === -Infinity ? 0 : maxEndTime - minStartTime;
-
-  // Find primary root name
   const rootName = roots.length > 0 ? roots[0].name : 'Unknown Operation';
   
-  // Try to find service name
   let serviceName = 'unknown-service';
   if (roots.length > 0 && roots[0].attributes) {
     const svcAttr = roots[0].attributes.find(a => a.key === 'service.name');
@@ -561,85 +398,74 @@ function TraceGroup({ traceId, roots, activeTab, selectedSpanId, onSelect }: { t
 
   return (
     <div className={cn(
-      "mb-4 border rounded-lg overflow-hidden bg-[#111218]/30 transition-colors",
-      hasError ? "border-red-500/30" : "border-slate-800"
+      "mb-6 glass rounded-[2.5rem] border border-white/5 overflow-hidden transition-all duration-500",
+      expanded ? "shadow-2xl shadow-black/40" : "hover:border-white/10"
     )}>
       <div 
         className={cn(
-          "flex items-center justify-between p-3 cursor-pointer hover:bg-slate-800/50 transition-colors border-b",
-          hasError ? "bg-red-500/5 border-red-500/20" : "bg-[#111218] border-slate-800"
+          "flex items-center justify-between p-5 cursor-pointer transition-colors relative",
+          hasError ? "bg-red-500/5" : "bg-white/5"
         )}
         onClick={() => setExpanded(!expanded)}
       >
-        <div className="flex items-center gap-3">
-          <div className="text-slate-400 text-xs w-4 text-center">
-            {expanded ? '▼' : '▶'}
+        <div className="flex items-center gap-5">
+          <div className={cn("transition-transform duration-300", expanded ? "rotate-180" : "")}>
+            <ChevronDown size={18} className="text-slate-500" />
           </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="font-semibold text-slate-200">{rootName}</span>
-              <span className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 text-[10px] font-mono border border-slate-700">
+          <div className="flex flex-col gap-1">
+            <div className="flex items-center gap-3">
+              <span className="font-black text-white text-base tracking-tight">{rootName}</span>
+              <span className="px-2.5 py-0.5 rounded-full bg-cyan-vibrant/10 text-cyan-vibrant text-[9px] font-black uppercase tracking-tighter border border-cyan-vibrant/20">
                 {serviceName}
               </span>
               {hasError && (
-                <span className="px-1.5 py-0.5 rounded bg-red-500/20 text-red-400 text-[10px] font-bold uppercase tracking-wider flex items-center gap-1">
+                <span className="px-2.5 py-0.5 rounded-full bg-red-500/10 text-red-500 text-[9px] font-black uppercase tracking-tighter border border-red-500/20 flex items-center gap-1">
                   <AlertCircle size={10} />
-                  {errorCount} Error{errorCount > 1 ? 's' : ''}
+                  {errorCount} {errorCount > 1 ? 'Errors' : 'Error'}
                 </span>
               )}
             </div>
-            <div className="flex items-center gap-3 text-xs text-slate-500 mt-1 font-mono">
-              <span>{traceId.substring(0, 8)}...</span>
-              <span className="text-slate-600">•</span>
-              <span>{minStartTime !== Infinity ? format(new Date(minStartTime), 'MMM d, HH:mm:ss.SSS') : 'Unknown time'}</span>
+            <div className="flex items-center gap-3 text-[10px] text-slate-500 font-black uppercase tracking-widest">
+              <span>{traceId.substring(0, 12)}</span>
+              <span className="w-1 h-1 rounded-full bg-slate-700" />
+              <span>{minStartTime !== Infinity ? format(new Date(minStartTime), 'MMM d, HH:mm:ss.SSS') : 'Unknown'}</span>
             </div>
           </div>
         </div>
         
-        {/* Sparkline */}
-        <div className="flex-1 max-w-[120px] mx-4 h-6 relative opacity-60 hidden sm:block">
-          {durationMs > 0 && allSpans.map((s, i) => {
-            const left = ((s.startTimeMs - minStartTime) / durationMs) * 100;
-            const width = Math.max((s.durationMs / durationMs) * 100, 1);
-            const isErr = s.status?.code === 2;
-            return (
-              <div 
-                key={i} 
-                className={cn("absolute h-1 rounded-full top-1/2 -translate-y-1/2", isErr ? "bg-red-500" : "bg-blue-400")}
-                style={{ left: `${left}%`, width: `${width}%`, opacity: 0.3 + (0.7 * (1 - (i / allSpans.length))) }}
-              />
-            );
-          })}
-        </div>
-
-        <div className="flex items-center gap-4 text-xs font-mono">
-          <div className="flex items-center gap-1.5 text-slate-400 bg-slate-800/50 px-2 py-1 rounded border border-slate-700/50">
-            <Layers size={12} />
-            <span>{spanCount} spans</span>
-          </div>
-          <div className="flex items-center gap-1.5 text-slate-300 bg-slate-800/50 px-2 py-1 rounded border border-slate-700/50">
-            <Clock size={12} />
-            <span>{durationMs < 1 ? '<1' : durationMs.toFixed(2)} ms</span>
+        <div className="flex items-center gap-6">
+          <div className="hidden md:flex items-center gap-3">
+             <div className="text-right">
+                <div className="text-[10px] text-slate-500 font-black uppercase tracking-widest leading-none mb-1">Duration</div>
+                <div className="text-sm font-black text-cyan-vibrant tabular-nums">{durationMs.toFixed(2)}ms</div>
+             </div>
+             <div className="h-8 w-px bg-white/5 mx-2" />
+             <div className="text-right">
+                <div className="text-[10px] text-slate-500 font-black uppercase tracking-widest leading-none mb-1">Spans</div>
+                <div className="text-sm font-black text-white tabular-nums">{spanCount}</div>
+             </div>
           </div>
         </div>
       </div>
       
       {expanded && (
-        <div className="p-2">
+        <div className="p-4 border-t border-white/5 bg-black/20">
           {activeTab === 'tree' ? (
-            roots.map(root => (
-              <SpanNode 
-                key={root.spanId} 
-                span={root} 
-                depth={0} 
-                selectedSpanId={selectedSpanId}
-                onSelect={onSelect}
-                traceDurationMs={durationMs}
-                traceStartTimeMs={minStartTime}
-              />
-            ))
+            <div className="space-y-1">
+              {roots.map(root => (
+                <SpanNode 
+                  key={root.spanId} 
+                  span={root} 
+                  depth={0} 
+                  selectedSpanId={selectedSpanId}
+                  onSelect={onSelect}
+                  traceDurationMs={durationMs}
+                  traceStartTimeMs={minStartTime}
+                />
+              ))}
+            </div>
           ) : (
-            <div className="h-64">
+            <div className="h-[400px] overflow-y-auto custom-scrollbar">
               <Timeline 
                 roots={roots} 
                 selectedSpanId={selectedSpanId}
@@ -657,7 +483,7 @@ export default function App() {
   const [rawSpans, setRawSpans] = useState<Span[]>([]);
   const [isConnected, setIsConnected] = useState(false);
   const [selectedSpanId, setSelectedSpanId] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'tree' | 'timeline' | 'topology' | 'flame'>('tree');
+  const [activeTab, setActiveTab] = useState<'tree' | 'timeline' | 'topology' | 'flame' | 'setup'>('tree');
   
   const [filterName, setFilterName] = useState('');
   const [filterTraceId, setFilterTraceId] = useState('');
@@ -693,27 +519,30 @@ export default function App() {
       setSelectedSpanId(null);
     });
 
+    window.addEventListener('keydown', handleKeyDown);
+
     return () => {
       socket.disconnect();
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [selectedSpanId, groupedTraces]);
+  }, []); // Remove selectedSpanId and groupedTraces from deps to avoid re-renders
 
   const handleKeyDown = (e: KeyboardEvent) => {
     if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
 
     if (e.key === 'j') {
-      // Find next trace/span
       navigateSelection(1);
     } else if (e.key === 'k') {
       navigateSelection(-1);
     } else if (e.key === 'Escape') {
       setSelectedSpanId(null);
+    } else if (e.key === '/' && !e.ctrlKey && !e.metaKey) {
+      e.preventDefault();
+      document.getElementById('global-search')?.focus();
     }
   };
 
   const navigateSelection = (direction: number) => {
-    // Basic trace navigation for now
     if (groupedTraces.length === 0) return;
     const currentIndex = selectedSpanId 
       ? groupedTraces.findIndex(g => g.roots.some(r => r.spanId === selectedSpanId || findInTree(r, selectedSpanId)))
@@ -788,8 +617,7 @@ export default function App() {
         return { 
           ...node, 
           children,
-          // Store highlight state in the node for UI rendering
-          ...(isSearching ? { isHighlighted: isSearchHighlight } : {})
+          isHighlighted: isSearchHighlight
         } as any;
       }
 
@@ -813,6 +641,7 @@ export default function App() {
       return { traceId, roots, minStartTime };
     }).sort((a, b) => b.minStartTime - a.minStartTime);
   }, [filteredSpanTree]);
+
   const performanceMetrics = useMemo(() => {
     if (groupedTraces.length === 0) return null;
     const durations = groupedTraces.map(g => {
@@ -855,325 +684,323 @@ export default function App() {
   }, [selectedSpanId, spanTree]);
 
   return (
-    <div className="h-screen w-full bg-[#0B0C10] text-slate-300 flex flex-col font-sans overflow-hidden">
-      {/* Header */}
-      <header className="h-14 border-b border-slate-800 bg-[#111218] flex items-center justify-between px-4 shrink-0">
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded bg-blue-600 flex items-center justify-center text-white font-bold shadow-lg shadow-blue-500/20">
-            D
-          </div>
-          <h1 className="text-lg font-semibold text-white tracking-tight">Daggerboard</h1>
-          <div className="ml-4 flex items-center gap-2 text-xs font-mono px-2 py-1 rounded bg-slate-800/50 border border-slate-700/50">
-            <div className={cn("w-2 h-2 rounded-full", isConnected ? "bg-emerald-500" : "bg-red-500")} />
-            {isConnected ? 'Connected' : 'Disconnected'}
-          </div>
-        </div>
-
-        <div className="flex-1 max-w-xl mx-8 flex items-center gap-2">
-          <div className="relative flex-1">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" size={16} />
-            <input
-              type="text"
-              placeholder="Search across traces, spans, and attributes..."
-              value={globalSearch}
-              onChange={(e) => setGlobalSearch(e.target.value)}
-              className="w-full bg-[#0B0C10] border border-slate-700/50 rounded-md pl-10 pr-4 py-1.5 text-sm text-slate-200 placeholder:text-slate-500 focus:outline-none focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/50 transition-all"
-            />
-          </div>
-          <button 
-            onClick={() => setSearchHighlightOnly(!searchHighlightOnly)}
-            className={cn(
-              "p-1.5 rounded border text-[10px] font-bold uppercase transition-all whitespace-nowrap",
-              searchHighlightOnly ? "bg-blue-600/20 border-blue-500/50 text-blue-400" : "bg-slate-800 border-slate-700 text-slate-500"
-            )}
-            title="Toggle between filtering out non-matches and just highlighting them"
-          >
-            {searchHighlightOnly ? "Highlight Mode" : "Filter Mode"}
-          </button>
+    <div className="h-screen w-full bg-obsidian text-slate-light flex font-inter overflow-hidden">
+      {/* Premium Sidebar */}
+      <aside className="w-16 flex flex-col items-center py-6 bg-black/20 border-r border-white/5 shrink-0 z-20 overflow-visible">
+        <div className="w-10 h-10 rounded-xl bg-cyan-vibrant/10 flex items-center justify-center text-cyan-vibrant shadow-lg shadow-cyan-vibrant/20 border border-cyan-vibrant/30 mb-8 animate-pulse-glow">
+          <Activity size={24} strokeWidth={2.5} />
         </div>
         
-        <div className="flex items-center gap-2">
-          <div className="text-xs text-slate-500 font-mono mr-4">
-            {rawSpans.length} spans
-          </div>
-          <button 
-            onClick={() => {
-              const now = Date.now() * 1000000;
-              const mockTrace: OTLPTraceData = {
-                resourceSpans: [{
-                  resource: {},
-                  scopeSpans: [{
-                    scope: {},
-                    spans: [
-                      {
-                        traceId: 'mock-trace-1',
-                        spanId: 'span-1',
-                        name: 'dagger call check',
-                        kind: 1,
-                        startTimeUnixNano: String(now),
-                        endTimeUnixNano: String(now + 5000 * 1000000),
-                        attributes: [{ key: 'dagger.module', value: 'test' }],
-                        events: [],
-                        status: { code: 1 }
-                      },
-                      {
-                        traceId: 'mock-trace-1',
-                        spanId: 'span-2',
-                        parentSpanId: 'span-1',
-                        name: 'build container',
-                        kind: 1,
-                        startTimeUnixNano: String(now + 100 * 1000000),
-                        endTimeUnixNano: String(now + 2000 * 1000000),
-                        attributes: [],
-                        events: [{ timeUnixNano: String(now + 150 * 1000000), name: 'pulling image', attributes: [] }],
-                        status: { code: 1 }
-                      },
-                      {
-                        traceId: 'mock-trace-1',
-                        spanId: 'span-3',
-                        parentSpanId: 'span-1',
-                        name: 'run tests',
-                        kind: 1,
-                        startTimeUnixNano: String(now + 2100 * 1000000),
-                        endTimeUnixNano: String(now + 4900 * 1000000),
-                        attributes: [],
-                        events: [],
-                        status: { code: 2 } // Error
-                      }
-                    ]
-                  }]
-                }]
-              };
-              fetch('/v1/traces', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(mockTrace)
-              });
-            }}
-            className="p-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded transition-colors"
-            title="Inject Mock Trace"
-          >
-            <Play size={16} />
-          </button>
+        <nav className="flex-1 flex flex-col gap-4">
+          <SidebarItem 
+            icon={<Layers size={20} />} 
+            active={activeTab === 'tree'} 
+            onClick={() => setActiveTab('tree')} 
+            label="Traces" 
+          />
+          <SidebarItem 
+            icon={<Activity size={20} />} 
+            active={activeTab === 'timeline'} 
+            onClick={() => setActiveTab('timeline')} 
+            label="Timeline" 
+          />
+          <SidebarItem 
+            icon={<Share2 size={20} />} 
+            active={activeTab === 'topology'} 
+            onClick={() => setActiveTab('topology')} 
+            label="Topology" 
+          />
+          <SidebarItem 
+            icon={<Flame size={20} />} 
+            active={activeTab === 'flame'} 
+            onClick={() => setActiveTab('flame')} 
+            label="Flame Graph" 
+          />
+          <div className="h-px w-6 bg-white/10 my-2" />
+          <SidebarItem 
+            icon={<Terminal size={20} />} 
+            active={activeTab === 'setup'} 
+            onClick={() => setActiveTab('setup')} 
+            label="Setup" 
+          />
+        </nav>
+
+        <div className="mt-auto flex flex-col gap-4">
           <button 
             onClick={clearTraces}
-            className="p-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded transition-colors"
-            title="Clear Traces"
+            className="p-3 text-slate-500 hover:text-red-400 hover:bg-red-500/10 rounded-xl transition-all"
+            title="Clear All Traces"
           >
-            <Trash2 size={16} />
+            <Trash2 size={20} />
           </button>
+          <div className={cn(
+            "w-3 h-3 rounded-full border-2 border-obsidian ring-2",
+            isConnected ? "bg-emerald-500 ring-emerald-500/20" : "bg-red-500 ring-red-500/20 shadow-[0_0_10px_rgba(239,68,68,0.5)]"
+          )} title={isConnected ? 'Server Connected' : 'Server Disconnected'} />
         </div>
-      </header>
+      </aside>
 
-      {/* Main Content */}
-      <div className="flex-1 flex overflow-hidden">
-        {/* Left Panel: Tree / Timeline */}
-        <div className={cn(
-          "border-slate-800 flex flex-col bg-[#0B0C10] transition-all duration-300",
-          selectedSpan ? "w-1/2 border-r" : "w-full"
-        )}>
-          <div className="h-10 border-b border-slate-800 flex items-center px-2 shrink-0 bg-[#111218]/50 justify-between">
-            <div className="flex items-center">
-              <button 
-                className={cn(
-                  "px-3 py-1.5 text-sm font-medium rounded-md transition-colors flex items-center gap-2",
-                  activeTab === 'tree' ? "bg-slate-800 text-white" : "text-slate-400 hover:text-slate-200"
-                )}
-                onClick={() => setActiveTab('tree')}
-              >
-                <Server size={14} />
-                Trace Tree
-              </button>
-              <button 
-                className={cn(
-                  "px-3 py-1.5 text-sm font-medium rounded-md transition-colors flex items-center gap-2 ml-1",
-                  activeTab === 'timeline' ? "bg-slate-800 text-white" : "text-slate-400 hover:text-slate-200"
-                )}
-                onClick={() => setActiveTab('timeline')}
-              >
-                <Activity size={14} />
-                Timeline
-              </button>
-              <button 
-                className={cn(
-                  "px-3 py-1.5 text-sm font-medium rounded-md transition-colors flex items-center gap-2 ml-1",
-                  activeTab === 'topology' ? "bg-slate-800 text-white" : "text-slate-400 hover:text-slate-200"
-                )}
-                onClick={() => setActiveTab('topology')}
-              >
-                <Share2 size={14} />
-                Topology
-              </button>
-              <button 
-                className={cn(
-                  "px-3 py-1.5 text-sm font-medium rounded-md transition-colors flex items-center gap-2 ml-1",
-                  activeTab === 'flame' ? "bg-slate-800 text-white" : "text-slate-400 hover:text-slate-200"
-                )}
-                onClick={() => setActiveTab('flame')}
-              >
-                <Flame size={14} />
-                Flame Graph
-              </button>
-            </div>
-            <div className="flex items-center gap-2 text-xs">
-              <label className="flex items-center gap-1.5 text-slate-300 cursor-pointer hover:text-white mr-2">
-                <input 
-                  type="checkbox" 
-                  checked={groupByTrace}
-                  onChange={(e) => setGroupByTrace(e.target.checked)}
-                  className="rounded border-slate-700 bg-slate-900 text-blue-500 focus:ring-blue-500/20"
-                />
-                Group by Trace
-              </label>
-              <input 
-                type="text" 
-                placeholder="Filter by trace ID..." 
-                value={filterTraceId}
-                onChange={(e) => setFilterTraceId(e.target.value)}
-                className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-slate-200 placeholder-slate-500 focus:outline-none focus:border-blue-500 w-32"
+      {/* Main Content Area */}
+      <main className="flex-1 flex flex-col overflow-hidden relative">
+        {/* Top Floating Glass Header */}
+        <header className="h-16 flex items-center justify-between px-6 shrink-0 relative z-10 glass-dark border-b-0">
+          <div className="flex items-center gap-4">
+            <h1 className="text-xl font-bold text-white tracking-tight flex items-center gap-3">
+              Daggerboard
+              <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-cyan-vibrant/10 text-cyan-vibrant border border-cyan-vibrant/30">v1.2.0</span>
+            </h1>
+          </div>
+
+          <div className="flex-1 max-w-2xl mx-12">
+            <div className="relative group">
+              <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 group-focus-within:text-cyan-vibrant transition-colors" size={18} />
+              <input
+                id="global-search"
+                type="text"
+                placeholder="Search traces, services, attributes... (Press '/' to focus)"
+                value={globalSearch}
+                onChange={(e) => setGlobalSearch(e.target.value)}
+                className="w-full bg-white/5 border border-white/10 rounded-full pl-12 pr-6 py-2.5 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-cyan-vibrant/50 focus:ring-4 focus:ring-cyan-vibrant/10 transition-all backdrop-blur-md"
               />
-              <input 
-                type="text" 
-                placeholder="Filter by name..." 
-                value={filterName}
-                onChange={(e) => setFilterName(e.target.value)}
-                className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-slate-200 placeholder-slate-500 focus:outline-none focus:border-blue-500 w-32"
-              />
-              <input 
-                type="number" 
-                placeholder="Min ms" 
-                value={filterMinDuration}
-                onChange={(e) => setFilterMinDuration(e.target.value)}
-                className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-slate-200 placeholder-slate-500 focus:outline-none focus:border-blue-500 w-20"
-              />
-              <select 
-                value={filterStatus}
-                onChange={(e) => setFilterStatus(e.target.value as any)}
-                className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-slate-200 focus:outline-none focus:border-blue-500"
-              >
-                <option value="all">All Status</option>
-                <option value="success">Success</option>
-                <option value="error">Error</option>
-              </select>
             </div>
           </div>
-          
-          <TraceScatterPlot 
-            traces={groupedTraces} 
-            onSelectTrace={(traceId) => {
-              setFilterTraceId(traceId);
-              // Find the first span of this trace to select it
-              const trace = groupedTraces.find(t => t.traceId === traceId);
-              if (trace && trace.roots.length > 0) {
-                  setSelectedSpanId(trace.roots[0].spanId);
-              }
-            }} 
-          />
-          
-          <div className="flex-1 overflow-auto p-4 custom-scrollbar">
-            {/* Metrics Dashboard */}
-            {performanceMetrics && (
-              <div className="mb-6 grid grid-cols-4 gap-3">
-                <div className="bg-[#111218] border border-slate-800 rounded-lg p-3 shadow-inner">
-                  <div className="text-[10px] text-slate-500 uppercase font-bold tracking-tighter mb-1">Total Traces</div>
-                  <div className="text-xl font-mono text-slate-300">{performanceMetrics.count}</div>
-                </div>
-                <div className="bg-[#111218] border border-slate-800 rounded-lg p-3 shadow-inner border-l-blue-500/50">
-                  <div className="text-[10px] text-blue-500/70 uppercase font-bold tracking-tighter mb-1">P50 Latency</div>
-                  <div className="text-xl font-mono text-slate-300">{performanceMetrics.p50.toFixed(1)}ms</div>
-                </div>
-                <div className="bg-[#111218] border border-slate-800 rounded-lg p-3 shadow-inner border-l-amber-500/50">
-                  <div className="text-[10px] text-amber-500/70 uppercase font-bold tracking-tighter mb-1">P90 Latency</div>
-                  <div className="text-xl font-mono text-slate-300">{performanceMetrics.p90.toFixed(1)}ms</div>
-                </div>
-                <div className="bg-[#111218] border border-slate-800 rounded-lg p-3 shadow-inner border-l-red-500/50">
-                  <div className="text-[10px] text-red-500/70 uppercase font-bold tracking-tighter mb-1">P99 Latency</div>
-                  <div className="text-xl font-mono text-slate-300">{performanceMetrics.p99.toFixed(1)}ms</div>
-                </div>
+
+          <div className="flex items-center gap-4">
+            <div className="flex flex-col items-end mr-4">
+              <span className="text-[10px] uppercase font-bold tracking-widest text-slate-500">Live Load</span>
+              <span className="text-sm font-mono text-cyan-vibrant">{rawSpans.length} events</span>
+            </div>
+            
+            <button 
+              onClick={() => {
+                const now = Date.now() * 1000000;
+                const mockTrace: OTLPTraceData = {
+                  resourceSpans: [{
+                    resource: {},
+                    scopeSpans: [{
+                      scope: {},
+                      spans: [
+                        {
+                          traceId: 'mock-trace-' + Math.random().toString(36).substr(2, 6),
+                          spanId: 'span-1',
+                          name: 'dagger call check',
+                          kind: 1,
+                          startTimeUnixNano: String(now),
+                          endTimeUnixNano: String(now + 5000 * 1000000),
+                          attributes: [{ key: 'dagger.module', value: 'test' }],
+                          events: [],
+                          status: { code: 1 }
+                        }
+                      ]
+                    }]
+                  }]
+                };
+                fetch('/v1/traces', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify(mockTrace)
+                });
+              }}
+              className="px-4 py-2 bg-slate-100 text-obsidian rounded-full text-xs font-bold hover:bg-white transition-all shadow-xl shadow-white/5 active:scale-95"
+            >
+              Inject Mock
+            </button>
+          </div>
+        </header>
+
+        {/* Dashboard Grid Content */}
+        <div className="flex-1 flex overflow-hidden p-6 gap-6">
+          {/* Left Data Column */}
+          <div className={cn(
+            "flex flex-col gap-6 transition-all duration-500",
+            selectedSpan ? "w-[45%]" : "w-full"
+          )}>
+             {/* Performance Cards */}
+             {performanceMetrics && (
+              <div className="grid grid-cols-4 gap-4">
+                <MetricCard title="Total" value={performanceMetrics.count} unit="Traces" icon={<Server size={14}/>} color="cyan" />
+                <MetricCard title="P50" value={performanceMetrics.p50.toFixed(1)} unit="ms" icon={<Clock size={14}/>} color="blue" />
+                <MetricCard title="P90" value={performanceMetrics.p90.toFixed(1)} unit="ms" icon={<AlertCircle size={14}/>} color="orange" />
+                <MetricCard title="ERR %" value={((groupedTraces.filter(t => t.roots.some(r => r.status?.code === 2)).length / groupedTraces.length) * 100 || 0).toFixed(1)} unit="%" icon={<X size={14}/>} color="red" />
               </div>
             )}
 
-            {rawSpans.length === 0 ? (
-              <div className="h-full flex flex-col items-center justify-center text-slate-500 space-y-4">
-                <Activity size={48} className="opacity-20" />
-                <div className="text-center">
-                  <p className="mb-2">Waiting for Dagger traces...</p>
-                  <code className="block text-xs bg-slate-900 px-3 py-2 rounded border border-slate-800 text-left">
-                    export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318<br/>
-                    export OTEL_EXPORTER_OTLP_PROTOCOL=http/json<br/>
-                    dagger call check
-                  </code>
+            {/* Main Visualizer Panel */}
+            <div className="flex-1 glass-dark rounded-3xl overflow-hidden border border-white/5 flex flex-col">
+              <div className="h-12 border-b border-white/5 flex items-center justify-between px-6 bg-white/5 shrink-0">
+                <div className="flex items-center gap-6">
+                   <TabButton active={activeTab === 'tree'} onClick={() => setActiveTab('tree')}>Structure</TabButton>
+                   <TabButton active={activeTab === 'timeline'} onClick={() => setActiveTab('timeline')}>Flow</TabButton>
+                   <TabButton active={activeTab === 'topology'} onClick={() => setActiveTab('topology')}>Mesh</TabButton>
+                   <TabButton active={activeTab === 'flame'} onClick={() => setActiveTab('flame')}>Intensity</TabButton>
+                </div>
+
+                <div className="flex items-center gap-3">
+                   <div className="flex items-center bg-black/40 rounded-lg p-1 border border-white/5">
+                      <FilterToggle active={groupByTrace} onClick={() => setGroupByTrace(!groupByTrace)}>Grouped</FilterToggle>
+                      <FilterToggle active={!groupByTrace} onClick={() => setGroupByTrace(!groupByTrace)}>Flat</FilterToggle>
+                   </div>
                 </div>
               </div>
-            ) : (
-              groupByTrace ? (
-                groupedTraces.map(group => (
-                  <TraceGroup
-                    key={group.traceId}
-                    traceId={group.traceId}
-                    roots={group.roots}
-                    activeTab={activeTab}
-                    selectedSpanId={selectedSpanId}
-                    onSelect={(s) => setSelectedSpanId(s.spanId)}
-                  />
-                ))
-              ) : (
-                activeTab === 'tree' ? (
-                  <div className="py-2">
-                    {filteredSpanTree.map(root => {
-                      // Need to calculate duration for root if not grouped
-                      let minTime = root.startTimeMs;
-                      let maxTime = root.startTimeMs + root.durationMs;
-                      const findBounds = (n: ProcessedSpan) => {
-                        if (n.startTimeMs < minTime) minTime = n.startTimeMs;
-                        if (n.startTimeMs + n.durationMs > maxTime) maxTime = n.startTimeMs + n.durationMs;
-                        n.children.forEach(findBounds);
-                      };
-                      findBounds(root);
-                      const dur = maxTime - minTime;
 
-                      return (
-                        <SpanNode 
-                          key={root.spanId} 
-                          span={root} 
-                          depth={0} 
-                          selectedSpanId={selectedSpanId}
-                          onSelect={(s) => setSelectedSpanId(s.spanId)}
-                          traceDurationMs={dur}
-                          traceStartTimeMs={minTime}
-                        />
-                      );
-                    })}
-                  </div>
-                ) : activeTab === 'timeline' ? (
-                  <Timeline 
-                    roots={filteredSpanTree} 
-                    selectedSpanId={selectedSpanId}
-                    onSelect={(s) => setSelectedSpanId(s.spanId)}
-                  />
-                ) : activeTab === 'topology' ? (
-                  <ServiceGraph spans={filteredSpanTree} />
+              <div className="flex-1 overflow-auto custom-scrollbar">
+                {activeTab === 'setup' ? (
+                  <DaggerSetup />
+                ) : rawSpans.length === 0 ? (
+                  <EmptyState />
                 ) : (
-                  <FlameGraph 
-                    roots={filteredSpanTree} 
-                    selectedSpanId={selectedSpanId}
-                    onSelect={(s) => setSelectedSpanId(s.spanId)}
-                  />
-                )
-              )
-            )}
-            {filteredSpanTree.length === 0 && rawSpans.length > 0 && (
-              <div className="p-4 text-slate-500 text-center text-sm">No traces match the current filters.</div>
-            )}
+                  <div className="p-4">
+                     {activeTab === 'topology' ? (
+                        <div className="flex-1 min-h-[600px] h-full relative"><ServiceGraph spans={filteredSpanTree} /></div>
+                     ) : activeTab === 'flame' ? (
+                        <div className="flex-1 min-h-[600px] h-full relative"><FlameGraph roots={filteredSpanTree} selectedSpanId={selectedSpanId} onSelect={(s) => setSelectedSpanId(s.spanId)} /></div>
+                     ) : groupByTrace ? (
+                        groupedTraces.map(group => (
+                          <TraceGroup
+                            key={group.traceId}
+                            traceId={group.traceId}
+                            roots={group.roots}
+                            activeTab={activeTab}
+                            selectedSpanId={selectedSpanId}
+                            onSelect={(s) => setSelectedSpanId(s.spanId)}
+                          />
+                        ))
+                      ) : (
+                        activeTab === 'tree' ? (
+                           <div className="py-2">
+                             {filteredSpanTree.map(root => (
+                               <SpanNode 
+                                 key={root.spanId} 
+                                 span={root} 
+                                 depth={0} 
+                                 selectedSpanId={selectedSpanId}
+                                 onSelect={(s) => setSelectedSpanId(s.spanId)}
+                                 traceDurationMs={root.durationMs}
+                                 traceStartTimeMs={root.startTimeMs}
+                               />
+                             ))}
+                          </div>
+                        ) : (
+                          <Timeline 
+                            roots={filteredSpanTree} 
+                            selectedSpanId={selectedSpanId}
+                            onSelect={(s) => setSelectedSpanId(s.spanId)}
+                          />
+                        )
+                      )}
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
-        </div>
 
-        {/* Right Panel: Details */}
-        {selectedSpan && (
-          <div className="w-1/2 bg-[#111218] flex flex-col border-l border-slate-800">
-            <SpanDetails span={selectedSpan} onClose={() => setSelectedSpanId(null)} />
-          </div>
+          {/* Right Detail Panel */}
+          {selectedSpan && (
+            <div className="w-[55%] glass-dark rounded-3xl border border-white/10 flex flex-col overflow-hidden animate-in fade-in slide-in-from-right-4 duration-300">
+               <SpanDetails span={selectedSpan} onClose={() => setSelectedSpanId(null)} />
+            </div>
+          )}
+        </div>
+      </main>
+    </div>
+  );
+}
+
+// Sub-components for cleaned up JSX
+
+function SidebarItem({ icon, active, onClick, label }: { icon: React.ReactNode, active: boolean, onClick: () => void, label: string }) {
+  return (
+    <div className="relative flex items-center group">
+      <button 
+        onClick={onClick}
+        className={cn(
+          "w-12 h-12 flex items-center justify-center rounded-2xl transition-all duration-300 relative z-10",
+          active 
+            ? "bg-cyan-vibrant text-obsidian shadow-lg shadow-cyan-vibrant/40 scale-105" 
+            : "text-slate-500 hover:text-white hover:bg-white/5"
         )}
+      >
+        {icon}
+      </button>
+      <div className="absolute left-full ml-4 px-3 py-1.5 bg-slate-900 border border-slate-800 text-white text-xs rounded-lg opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all whitespace-nowrap z-50">
+         {label}
+      </div>
+    </div>
+  );
+}
+
+function MetricCard({ title, value, unit, icon, color }: { title: string, value: string | number, unit: string, icon: React.ReactNode, color: 'cyan' | 'blue' | 'orange' | 'red' }) {
+  const colors = {
+    cyan: "text-cyan-vibrant border-cyan-vibrant/20 bg-cyan-vibrant/5 shadow-cyan-vibrant/5",
+    blue: "text-blue-400 border-blue-400/20 bg-blue-400/5 shadow-blue-400/5",
+    orange: "text-orange-400 border-orange-400/20 bg-orange-400/5 shadow-orange-400/5",
+    red: "text-red-400 border-red-400/20 bg-red-400/5 shadow-red-400/5"
+  };
+
+  return (
+    <div className={cn("glass p-4 rounded-3xl border flex flex-col gap-2 relative overflow-hidden group hover:scale-[1.02] transition-transform", colors[color])}>
+       <div className="flex items-center justify-between">
+          <span className="text-[10px] uppercase font-black tracking-widest opacity-60">{title}</span>
+          <div className="opacity-40">{icon}</div>
+       </div>
+       <div className="flex items-baseline gap-1">
+          <span className="text-2xl font-mono font-bold">{value}</span>
+          <span className="text-xs opacity-50">{unit}</span>
+       </div>
+       <div className="absolute -bottom-2 -right-2 opacity-[0.03] rotate-12 transition-transform group-hover:scale-125 group-hover:-rotate-12 duration-700">
+          {icon}
+       </div>
+    </div>
+  );
+}
+
+function TabButton({ active, onClick, children }: { active: boolean, onClick: () => void, children: React.ReactNode }) {
+  return (
+    <button 
+      onClick={onClick}
+      className={cn(
+        "relative py-1 text-sm font-bold transition-all",
+        active ? "text-white" : "text-slate-500 hover:text-slate-300"
+      )}
+    >
+       {children}
+       {active && (
+         <div className="absolute -bottom-[14px] left-0 right-0 h-0.5 bg-cyan-vibrant shadow-[0_0_8px_rgba(102,252,241,0.5)] rounded-full" />
+       )}
+    </button>
+  );
+}
+
+function FilterToggle({ active, onClick, children }: { active: boolean, onClick: () => void, children: React.ReactNode }) {
+  return (
+    <button 
+      onClick={onClick}
+      className={cn(
+        "px-4 py-1.5 text-[10px] font-bold uppercase rounded-md transition-all",
+        active ? "bg-white/10 text-white shadow-sm" : "text-slate-500 hover:text-slate-400"
+      )}
+    >
+      {children}
+    </button>
+  );
+}
+
+function EmptyState() {
+  return (
+    <div className="h-full flex flex-col items-center justify-center text-slate-500 space-y-6 py-20">
+      <div className="w-24 h-24 rounded-full bg-white/5 flex items-center justify-center border border-white/5 animate-pulse">
+        <Activity size={48} className="text-slate-600" />
+      </div>
+      <div className="text-center max-w-sm">
+        <h3 className="text-lg font-bold text-slate-300 mb-2">No trace data detected</h3>
+        <p className="text-sm text-slate-500 mb-8 leading-relaxed">
+          Waiting for OTLP spans on <span className="text-cyan-vibrant/60">localhost:4318</span>. Use Dagger or any OpenTelemetry SDK to start visualizing.
+        </p>
+        <div className="bg-black/40 p-4 rounded-3xl border border-white/5 text-left font-mono text-xs overflow-hidden">
+          <div className="text-slate-600 mb-1">// Quick start</div>
+          <div className="text-emerald-400">export <span className="text-slate-400">OTEL_EXPORTER_OTLP_ENDPOINT</span>=http://localhost:4318</div>
+          <div className="text-cyan-vibrant mt-2">dagger <span className="text-slate-200">call check</span></div>
+        </div>
       </div>
     </div>
   );

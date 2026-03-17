@@ -1,0 +1,26 @@
+FROM node:20-alpine
+
+WORKDIR /app
+
+COPY package*.json ./
+RUN npm ci
+
+COPY . .
+
+# Copy initialization scripts
+COPY docker/surreal-init.sh /app/surreal-init.sh
+COPY docker/entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/surreal-init.sh /app/entrypoint.sh
+
+# Install curl for health checks
+RUN apk add --no-cache curl
+
+EXPOSE 3000
+EXPOSE 4318
+EXPOSE 5173
+
+ENV NODE_ENV=development
+
+# Use custom entrypoint that handles DB initialization, then runs dev server
+ENTRYPOINT ["/app/entrypoint.sh"]
+CMD ["npm", "run", "dev"]

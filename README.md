@@ -1,87 +1,153 @@
 <div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+<img width="1200" alt="Daggerboard Banner" src=".gemini/antigravity/brain/73d51de5-fb86-485e-aacf-36565ebcbb56/daggerboard_banner_png_1773722258174.png" />
 
 # Daggerboard
 
-**Real-time OTLP trace visualization with persistent storage for historical analysis.**
+**Premium Real-time OTLP Trace Visualization & Historical Analysis Engine**
 
-Daggerboard visualizes OpenTelemetry traces in real-time, with optional SurrealDB persistence for historical correlation, service topology mapping, and anomaly detection.
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![OpenTelemetry](https://img.shields.io/badge/OpenTelemetry-Enabled-blueviolet)](https://opentelemetry.io/)
+[![SurrealDB](https://img.shields.io/badge/Database-SurrealDB-FF00A0)](https://surrealdb.com/)
+[![React](https://img.shields.io/badge/Frontend-React-61DAFB)](https://reactjs.org/)
 
-## Features
+</div>
 
-- 🔴 **Real-time trace visualization** - Tree, timeline, and service topology views
-- 💾 **Persistent storage** - SurrealDB backend for historical queries
-- 🔗 **Service dependency mapping** - Automatic service-to-service relationship tracking
-- 📊 **Historical analysis** - Query traces by service, error status, time range
-- 🚨 **Error propagation tracking** - Understand how errors flow through your system
-- ⚡ **Performance analytics** - Latency percentiles between service pairs
+---
 
-## Run Locally
+## 🚀 Overview
 
-**Prerequisites:** Node.js
+**Daggerboard** is a state-of-the-art observability dashboard designed to visualize OpenTelemetry (OTLP) traces in real-time. Built for high-performance cloud-native systems, it provides deep visibility into complex microservice interactions, helping developers identify bottlenecks, trace error propagation, and analyze historical performance trends with ease.
 
-1. Install dependencies:
-   ```bash
-   npm install
-   ```
+By combining a lighting-fast React frontend with a robust SurrealDB backend, Daggerboard offers both instantaneous real-time updates and long-term persistence for deep-dive historical correlation.
 
-2. Set environment variables in `.env.local`:
-   ```bash
-   GEMINI_API_KEY="your-api-key"
-   DB_PATH="file://./daggerboard.db"  # Optional, defaults to ./daggerboard.db
-   ```
+## ✨ Key Features
 
-3. Start the app:
-   ```bash
-   npm run dev
-   ```
+### 🔴 Real-Time Observability
+Experience live trace streams as they happen. Daggerboard's WebSocket-powered UI updates instantly when new OTLP data arrives.
 
-   This will:
-   - Initialize SurrealDB with trace schema
-   - Start OTLP receiver on port 4318
-   - Start UI on port 3000
+### 💾 Persistent Historical Analysis
+Leverage the power of **SurrealDB** to store and query millions of spans. Analyze trends over days, weeks, or months without sacrificing performance.
 
-4. Send traces:
-   ```bash
-   export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
-   export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
-   dagger call check  # Or any traced application
-   ```
+### 🔗 Dynamic Service Topology
+Automatically map your system's architecture. Visualize service-to-service dependencies, call frequencies, and latency hotspots in an interactive graph.
 
-## Architecture
+### 🚨 Advanced Error Tracking
+Daggerboard doesn't just show errors; it tracks their **propagation**. See exactly how a failure in a downstream database call impacts your top-level API response.
 
-Daggerboard consists of:
-- **Frontend** - React dashboard with real-time updates via WebSocket
-- **Backend** - Express server with OTLP receiver
-- **Database** - SurrealDB for trace persistence and historical queries
+### 📊 Performance DSL
+Rich analytics featuring P50/P99 latency percentiles between any service pair, error rate distribution, and critical path highlighting in every trace.
 
-Traces flow: OTLP exporter → Server → In-memory cache (UI) + SurrealDB (persistence)
+---
 
-## Database Features
+## 📸 Guided Tour
 
-For details on querying historical data, see [DATABASE_SETUP.md](DATABASE_SETUP.md).
+### Interactive Trace Visualization
+Navigate complex traces with the nested tree and timeline views. Spot performance issues at a glance with critical path highlighting.
 
-### Historical Queries
-- `GET /api/history?hours=24&status=error` - Error traces from last 24 hours
-- `GET /api/history?service=auth-service` - All traces touching a service
-- `GET /api/topology` - Service dependency graph with call counts
-- `GET /api/service/:name/errors?hours=24` - Error patterns
+<div align="center">
+<img width="800" alt="Trace View Mockup" src=".gemini/antigravity/brain/73d51de5-fb86-485e-aacf-36565ebcbb56/trace_view_mockup_png_1773722277579.png" />
+</div>
 
-### Example: Find cascading failures
+### Service Topology Mapping
+Visualize your microservices ecosystem and understand exactly how data flows through your system.
+
+<div align="center">
+<img width="800" alt="Service Graph Mockup" src=".gemini/antigravity/brain/73d51de5-fb86-485e-aacf-36565ebcbb56/service_graph_mockup_png_1773722292315.png" />
+</div>
+
+---
+
+## 🛠️ Quick Start
+
+### 🐳 Docker (Recommended) - Zero Config Setup
+
+**Prerequisites:** Docker & Docker Compose only
+
 ```bash
-# Query traces where both service A and B were involved
-curl http://localhost:3000/api/history?service=payment-service | jq '.[] | select(.services | contains(["database"]))'
+git clone https://github.com/your-org/Daggerboard.git
+cd Daggerboard
+docker-compose up
 ```
 
-## Configuration
+That's it! ✨ The system automatically:
+- ✅ Starts SurrealDB database
+- ✅ Initializes schema (tables, indexes, metadata)
+- ✅ Starts Daggerboard application
+- ✅ Ready for traces in ~10-15 seconds
+
+**Access:**
+- 📊 Dashboard: http://localhost:3000
+- 📡 OTLP Receiver: http://localhost:4318
+- 💾 Database: ws://localhost:8000
+
+**Development with hot-reload:**
+```bash
+docker-compose -f docker-compose.dev.yml up
+```
+
+See [DOCKER.md](DOCKER.md) and [AUTOMATED_SETUP.md](AUTOMATED_SETUP.md) for full details.
+
+### 💻 Local Development (Alternative)
+
+**Prerequisites:** Node.js (v18+)
+
+```bash
+git clone https://github.com/your-org/Daggerboard.git
+cd Daggerboard
+npm install
+npm run dev
+```
+
+**Configuration:** Create `.env.local`:
+```bash
+GEMINI_API_KEY="your-api-key"
+DB_PATH="file://./daggerboard.db"
+PORT=3000
+OTLP_PORT=4318
+```
+
+**Access:**
+- 📊 Dashboard: http://localhost:3000
+- 📡 OTLP Receiver: http://localhost:4318
+
+### 📡 Send Sample Traces
+Configure your application to export OTLP data to Daggerboard:
+```bash
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
+# Run your traced application
+```
+
+---
+
+## 🏗️ Architecture
+
+```mermaid
+graph TD
+    App[Traced Application] -->|OTLP/JSON| Receiver[Daggerboard Server]
+    Receiver -->|WebSocket| UI[React Dashboard]
+    Receiver -->|Store| DB[(SurrealDB)]
+    UI -->|Query| DB
+    UI -->|Real-time| Storage[In-memory Cache]
+    Receiver --> Storage
+```
+
+## ⚙️ Configuration
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| PORT | 3000 | UI server port |
-| OTLP_PORT | 4318 | OTLP receiver port |
-| DB_PATH | file://./daggerboard.db | SurrealDB location |
+| `PORT` | `3000` | Port for the web dashboard |
+| `OTLP_PORT` | `4318` | Port for the OTLP/HTTP receiver |
+| `DB_PATH` | `file://./daggerboard.db` | SurrealDB connection string |
+| `GEMINI_API_KEY` | - | Required for AI-powered insights (optional) |
 
-## Deployment
+---
 
-See [DATABASE_SETUP.md](DATABASE_SETUP.md) for Docker and production deployment guidance.
+## 📄 License
+Daggerboard is released under the [MIT License](LICENSE).
+
+---
+
+<div align="center">
+Built with ❤️ for the OpenTelemetry ecosystem.
+</div>
