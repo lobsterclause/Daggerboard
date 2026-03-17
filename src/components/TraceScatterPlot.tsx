@@ -75,7 +75,7 @@ export function TraceScatterPlot({ traces, onSelectTrace }: TraceScatterPlotProp
           />
           <Scatter 
             data={data} 
-            onClick={(d) => onSelectTrace(d.traceId)}
+            onClick={(d: any) => onSelectTrace(d.traceId)}
             className="cursor-pointer"
           >
             {data.map((entry, index) => (

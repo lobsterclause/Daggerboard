@@ -239,7 +239,7 @@ export async function getTraceHistory(options: {
   }
 
   query += ` ORDER BY startTime DESC LIMIT ${limit};`;
-  const result = await db.query(query);
+  const result = await db.query(query) as any[];
   return result[0]?.result || [];
 }
 
@@ -257,7 +257,7 @@ export async function getServiceTopology() {
     FROM service_calls
     ORDER BY callCount DESC;
   `;
-  const result = await db.query(query);
+  const result = await db.query(query) as any[];
   return result[0]?.result || [];
 }
 
@@ -269,7 +269,7 @@ export async function getServiceStats(serviceName: string) {
     FROM services
     WHERE name == '${serviceName}';
   `;
-  const result = await db.query(query);
+  const result = await db.query(query) as any[];
   return result[0]?.result?.[0] || null;
 }
 
@@ -288,7 +288,7 @@ export async function getErrorPatterns(serviceName: string, hours: number = 24) 
     GROUP BY spanName
     ORDER BY frequency DESC;
   `;
-  const result = await db.query(query);
+  const result = await db.query(query) as any[];
   return result[0]?.result || [];
 }
 
@@ -307,7 +307,7 @@ export async function getLatencyPercentiles(fromService: string, toService: stri
       AND toService == '${toService}'
       AND lastObserved > time::now() - ${hours}h;
   `;
-  const result = await db.query(query);
+  const result = await db.query(query) as any[];
   return result[0]?.result?.[0] || null;
 }
 

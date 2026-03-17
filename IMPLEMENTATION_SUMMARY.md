@@ -15,9 +15,15 @@ Complete SurrealDB integration with:
 
 ### 2. Server Integration (`server.ts`)
 - Database initialization on startup
-- Extract spans helper function (moved from App.tsx)
+- Refactored span processing into optimized utility module (`src/utils.ts`)
 - Non-blocking trace persistence (DB ops don't block OTLP response)
 - 6 new API endpoints for historical queries
+
+### 3. Frontend & Visualizers (`src/App.tsx`, `src/components/*`)
+- **Inventory View**: Comprehensive service statistics and error tracking.
+- **Trace Latency Scatter Plot**: Dynamic visualization for quick performance analysis.
+- **Span Utilities**: New dedicated module for robust span processing and tree construction.
+- **Topology Fixes**: Improved sizing and responsiveness for React Flow components.
 
 ### 3. API Endpoints
 
@@ -91,7 +97,6 @@ curl http://localhost:3000/api/latency/frontend/backend?hours=24
 
 ## What's NOT Included (for future work)
 
-- **Frontend components** for historical UI (queries work, just not visualized)
 - **Automated retention policies** (manual cleanup only)
 - **Multi-instance SurrealDB** (single file-based DB only)
 - **Authentication** for database access
@@ -119,8 +124,6 @@ curl http://localhost:3000/api/latency/frontend/backend?hours=24
 - `package.json` - Add surrealdb dependency
 - `.env.example` - Document DB_PATH
 - `README.md` - Describe persistence features
-
-**Unchanged:**
-- `src/App.tsx` - No changes needed (except for new endpoint calls)
-- `src/types.ts` - No changes needed
-- `src/components/*` - Ready for historical UI components
+- `src/App.tsx` - Added Inventory view, Scatter Plot, and UI fixes
+- `src/utils.ts` - [NEW] Specialized span processing logic
+- `src/utils.test.ts` - [NEW] Core logic validation suite

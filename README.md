@@ -28,6 +28,11 @@ Experience live trace streams as they happen. Daggerboard's WebSocket-powered UI
 ### 💾 Persistent Historical Analysis
 Leverage the power of **SurrealDB** to store and query millions of spans. Analyze trends over days, weeks, or months without sacrificing performance.
 
+### 📊 Performance Analytics
+- **Service Inventory**: Deep-dive metrics for every discovered service, including error rates and activity tracking.
+- **Trace Scatter Plot**: Quick-glance latency distribution analysis with direct trace navigation.
+- **Latency Percentiles**: P50/P99 metrics between any service pair.
+
 ### 🔗 Dynamic Service Topology
 Automatically map your system's architecture. Visualize service-to-service dependencies, call frequencies, and latency hotspots in an interactive graph.
 

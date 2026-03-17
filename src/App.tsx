@@ -483,7 +483,7 @@ export default function App() {
   const [rawSpans, setRawSpans] = useState<Span[]>([]);
   const [isConnected, setIsConnected] = useState(false);
   const [selectedSpanId, setSelectedSpanId] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'tree' | 'timeline' | 'topology' | 'flame' | 'setup'>('tree');
+  const [activeTab, setActiveTab] = useState<'tree' | 'timeline' | 'topology' | 'flame' | 'setup' | 'inventory'>('tree');
   
   const [filterName, setFilterName] = useState('');
   const [filterTraceId, setFilterTraceId] = useState('');
@@ -699,6 +699,12 @@ export default function App() {
             label="Traces" 
           />
           <SidebarItem 
+            icon={<Database size={20} />} 
+            active={activeTab === 'inventory'} 
+            onClick={() => setActiveTab('inventory')} 
+            label="Inventory" 
+          />
+          <SidebarItem 
             icon={<Activity size={20} />} 
             active={activeTab === 'timeline'} 
             onClick={() => setActiveTab('timeline')} 
@@ -843,50 +849,73 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="flex-1 overflow-auto custom-scrollbar">
+              <div className="flex-1 overflow-hidden relative">
                 {activeTab === 'setup' ? (
-                  <DaggerSetup />
+                  <div className="h-full overflow-auto custom-scrollbar p-6"><DaggerSetup /></div>
                 ) : rawSpans.length === 0 ? (
                   <EmptyState />
                 ) : (
-                  <div className="p-4">
+                  <div className="h-full w-full">
                      {activeTab === 'topology' ? (
-                        <div className="flex-1 min-h-[600px] h-full relative"><ServiceGraph spans={filteredSpanTree} /></div>
+                        <div className="h-full w-full relative"><ServiceGraph spans={filteredSpanTree} /></div>
                      ) : activeTab === 'flame' ? (
-                        <div className="flex-1 min-h-[600px] h-full relative"><FlameGraph roots={filteredSpanTree} selectedSpanId={selectedSpanId} onSelect={(s) => setSelectedSpanId(s.spanId)} /></div>
-                     ) : groupByTrace ? (
-                        groupedTraces.map(group => (
-                          <TraceGroup
-                            key={group.traceId}
-                            traceId={group.traceId}
-                            roots={group.roots}
-                            activeTab={activeTab}
-                            selectedSpanId={selectedSpanId}
-                            onSelect={(s) => setSelectedSpanId(s.spanId)}
-                          />
-                        ))
-                      ) : (
-                        activeTab === 'tree' ? (
-                           <div className="py-2">
-                             {filteredSpanTree.map(root => (
-                               <SpanNode 
-                                 key={root.spanId} 
-                                 span={root} 
-                                 depth={0} 
-                                 selectedSpanId={selectedSpanId}
-                                 onSelect={(s) => setSelectedSpanId(s.spanId)}
-                                 traceDurationMs={root.durationMs}
-                                 traceStartTimeMs={root.startTimeMs}
-                               />
-                             ))}
+                        <div className="h-full w-full relative"><FlameGraph roots={filteredSpanTree} selectedSpanId={selectedSpanId} onSelect={(s) => setSelectedSpanId(s.spanId)} /></div>
+                     ) : activeTab === 'inventory' ? (
+                        <div className="h-full overflow-auto custom-scrollbar p-6">
+                           <InventoryView spans={rawSpans} />
+                        </div>
+                     ) : (
+                        <div className="h-full flex flex-col">
+                           {activeTab === 'tree' && (
+                              <TraceScatterPlot 
+                                 traces={groupedTraces.map(t => ({ 
+                                    traceId: t.traceId, 
+                                    roots: t.roots, 
+                                    minStartTime: Math.min(...t.roots.map(r => r.startTimeMs)) 
+                                 }))} 
+                                 onSelectTrace={(id) => {
+                                    const span = rawSpans.find(s => s.traceId === id);
+                                    if (span) setSelectedSpanId(span.spanId);
+                                 }}
+                              />
+                           )}
+                           <div className="flex-1 overflow-auto custom-scrollbar p-4">
+                              {groupByTrace ? (
+                              groupedTraces.map(group => (
+                                <TraceGroup
+                                  key={group.traceId}
+                                  traceId={group.traceId}
+                                  roots={group.roots}
+                                  activeTab={activeTab}
+                                  selectedSpanId={selectedSpanId}
+                                  onSelect={(s) => setSelectedSpanId(s.spanId)}
+                                />
+                              ))
+                            ) : (
+                              activeTab === 'tree' ? (
+                                 <div className="py-2">
+                                   {filteredSpanTree.map(root => (
+                                     <SpanNode 
+                                       key={root.spanId} 
+                                       span={root} 
+                                       depth={0} 
+                                       selectedSpanId={selectedSpanId}
+                                       onSelect={(s) => setSelectedSpanId(s.spanId)}
+                                       traceDurationMs={root.durationMs}
+                                       traceStartTimeMs={root.startTimeMs}
+                                     />
+                                   ))}
+                                </div>
+                              ) : (
+                                <Timeline 
+                                  roots={filteredSpanTree} 
+                                  selectedSpanId={selectedSpanId}
+                                  onSelect={(s) => setSelectedSpanId(s.spanId)}
+                                />
+                              )
+                            )}
                           </div>
-                        ) : (
-                          <Timeline 
-                            roots={filteredSpanTree} 
-                            selectedSpanId={selectedSpanId}
-                            onSelect={(s) => setSelectedSpanId(s.spanId)}
-                          />
-                        )
+                        </div>
                       )}
                   </div>
                 )}
@@ -1001,6 +1030,65 @@ function EmptyState() {
           <div className="text-emerald-400">export <span className="text-slate-400">OTEL_EXPORTER_OTLP_ENDPOINT</span>=http://localhost:4318</div>
           <div className="text-cyan-vibrant mt-2">dagger <span className="text-slate-200">call check</span></div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function InventoryView({ spans }: { spans: Span[] }) {
+  const stats = useMemo(() => {
+    const services = new Map<string, { count: number; errors: number; lastSeen: number }>();
+    spans.forEach(s => {
+      const svcAttr = s.attributes?.find(a => a.key === 'service.name');
+      const name = String(svcAttr?.value?.stringValue || svcAttr?.value || 'unknown-service');
+      const curr = services.get(name) || { count: 0, errors: 0, lastSeen: 0 };
+      curr.count++;
+      if (s.status?.code === 2) curr.errors++;
+      const time = Number(BigInt(s.startTimeUnixNano) / 1000000n);
+      if (time > curr.lastSeen) curr.lastSeen = time;
+      services.set(name, curr);
+    });
+    return Array.from(services.entries()).sort((a, b) => b[1].count - a[1].count);
+  }, [spans]);
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <h2 className="text-xl font-bold text-white">Service Inventory</h2>
+        <div className="text-sm text-slate-400">{stats.length} Services Discovered</div>
+      </div>
+      
+      <div className="grid grid-cols-1 gap-4">
+        {stats.map(([name, data]) => (
+          <div key={name} className="glass-dark border border-white/5 rounded-2xl p-5 hover:border-white/10 transition-all group">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-3">
+                <div className={cn("w-3 h-3 rounded-full", getServiceColor(name).replace('text-', 'bg-'))} />
+                <span className="text-lg font-semibold text-white">{name}</span>
+              </div>
+              <div className="text-xs font-mono text-slate-500">
+                Last activity: {format(new Date(data.lastSeen), 'HH:mm:ss')}
+              </div>
+            </div>
+            
+            <div className="grid grid-cols-3 gap-8">
+              <div>
+                <div className="text-[10px] uppercase tracking-wider text-slate-500 mb-1">Total Spans</div>
+                <div className="text-2xl font-bold text-slate-200">{data.count}</div>
+              </div>
+              <div>
+                <div className="text-[10px] uppercase tracking-wider text-slate-500 mb-1">Errors</div>
+                <div className="text-2xl font-bold text-red-400">{data.errors}</div>
+              </div>
+              <div>
+                <div className="text-[10px] uppercase tracking-wider text-slate-500 mb-1">Error Rate</div>
+                <div className="text-2xl font-bold text-slate-200">
+                  {((data.errors / data.count) * 100).toFixed(1)}%
+                </div>
+              </div>
+            </div>
+          </div>
+        ))}
       </div>
     </div>
   );
