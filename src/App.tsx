@@ -1,7 +1,10 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { io } from 'socket.io-client';
 import { OTLPTraceData, Span, ProcessedSpan } from './types';
-import { Activity, Clock, Server, Play, RotateCcw, Trash2, AlertCircle, X, Search, Monitor, Cpu, Database, ArrowRightLeft, Layers } from 'lucide-react';
+import { Activity, Clock, Server, Play, RotateCcw, Trash2, AlertCircle, X, Search, Monitor, Cpu, Database, ArrowRightLeft, Layers, Share2, Flame, Download } from 'lucide-react';
+import { ServiceGraph } from './components/ServiceGraph';
+import { FlameGraph } from './components/FlameGraph';
+import { TraceScatterPlot } from './components/TraceScatterPlot';
 import { format } from 'date-fns';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -11,17 +14,43 @@ function cn(...inputs: ClassValue[]) {
 }
 
 const SERVICE_COLORS = [
-  'bg-blue-500', 'bg-emerald-500', 'bg-amber-500', 'bg-purple-500', 
-  'bg-pink-500', 'bg-cyan-500', 'bg-orange-500', 'bg-indigo-500'
+  '#3b82f6', // blue-500
+  '#10b981', // emerald-500
+  '#f59e0b', // amber-500
+  '#8b5cf6', // purple-500
+  '#ec4899', // pink-500
+  '#06b6d4', // cyan-500
+  '#f97316', // orange-500
+  '#6366f1', // indigo-500
+  '#84cc16', // lime-500
+  '#14b8a6', // teal-500
+  '#0ea5e9', // sky-500
+  '#d946ef', // fuchsia-500
+  '#f43f5e', // rose-500
 ];
 
-function getServiceColor(serviceName: string | undefined): string {
-  if (!serviceName) return 'bg-slate-500';
+export function getServiceColor(serviceName: string | undefined): string {
+  if (!serviceName) return '#64748b'; // slate-500
   let hash = 0;
   for (let i = 0; i < serviceName.length; i++) {
     hash = serviceName.charCodeAt(i) + ((hash << 5) - hash);
   }
   return SERVICE_COLORS[Math.abs(hash) % SERVICE_COLORS.length];
+}
+
+// Tailind class mapping for the old components that still use it
+const SERVICE_COLOR_CLASSES = [
+  'bg-blue-500', 'bg-emerald-500', 'bg-amber-500', 'bg-purple-500', 
+  'bg-pink-500', 'bg-cyan-500', 'bg-orange-500', 'bg-indigo-500'
+];
+
+function getServiceColorClass(serviceName: string | undefined): string {
+  if (!serviceName) return 'bg-slate-500';
+  let hash = 0;
+  for (let i = 0; i < serviceName.length; i++) {
+    hash = serviceName.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  return SERVICE_COLOR_CLASSES[Math.abs(hash) % SERVICE_COLOR_CLASSES.length];
 }
 
 // Helper to parse OTLP JSON into a flat list of spans
@@ -78,6 +107,7 @@ function buildSpanTree(spans: Span[]): ProcessedSpan[] {
       durationMs: endTimeMs - startTimeMs,
       serviceName,
       hasErrorDescendant: false,
+      isOnCriticalPath: false,
     });
   }
 
@@ -90,20 +120,47 @@ function buildSpanTree(spans: Span[]): ProcessedSpan[] {
     }
   }
 
-  // Sort children by start time and compute hasErrorDescendant
+  // Sort children by start time and compute hasErrorDescendant & isOnCriticalPath
   const processTree = (nodes: ProcessedSpan[]): boolean => {
     nodes.sort((a, b) => a.startTimeMs - b.startTimeMs);
     let anyError = false;
+    
+    // Find child with maximum duration to mark as critical path
+    let maxDurChild: ProcessedSpan | null = null;
+    let maxDur = -1;
+
     for (const node of nodes) {
+      if (node.durationMs > maxDur) {
+        maxDur = node.durationMs;
+        maxDurChild = node;
+      }
+      
       const childrenHasError = processTree(node.children);
       node.hasErrorDescendant = childrenHasError;
       if (node.status?.code === 2 || childrenHasError) {
         anyError = true;
       }
     }
+    
+    if (maxDurChild) {
+        maxDurChild.isOnCriticalPath = true;
+    }
+
     return anyError;
   };
+  
   processTree(roots);
+  
+  // Mark roots as critical path by default if they are the longest
+  let maxRoot: ProcessedSpan | null = null;
+  let maxRootDur = -1;
+  roots.forEach(r => {
+      if (r.durationMs > maxRootDur) {
+          maxRootDur = r.durationMs;
+          maxRoot = r;
+      }
+  });
+  if (maxRoot) (maxRoot as ProcessedSpan).isOnCriticalPath = true;
 
   return roots;
 }
@@ -139,10 +196,12 @@ function SpanNode({ span, depth, selectedSpanId, onSelect, traceDurationMs, trac
   // Extract key attributes for inline badges
   const inlineAttributes = [];
   if (span.attributes) {
-    const httpMethod = span.attributes.find(a => a.key === 'http.method')?.value;
-    const httpStatus = span.attributes.find(a => a.key === 'http.status_code')?.value;
-    const dbSystem = span.attributes.find(a => a.key === 'db.system')?.value;
-    const messagingSystem = span.attributes.find(a => a.key === 'messaging.system')?.value;
+    const httpMethod = span.attributes.find(a => a.key === 'http.method')?.value?.stringValue || span.attributes.find(a => a.key === 'http.method')?.value;
+    const httpStatus = span.attributes.find(a => a.key === 'http.status_code')?.value?.intValue || span.attributes.find(a => a.key === 'http.status_code')?.value;
+    const httpTarget = span.attributes.find(a => a.key === 'http.target' || a.key === 'url.path')?.value?.stringValue || span.attributes.find(a => a.key === 'http.target' || a.key === 'url.path')?.value;
+    const rpcMethod = span.attributes.find(a => a.key === 'rpc.method')?.value?.stringValue || span.attributes.find(a => a.key === 'rpc.method')?.value;
+    const dbSystem = span.attributes.find(a => a.key === 'db.system')?.value?.stringValue || span.attributes.find(a => a.key === 'db.system')?.value;
+    const messagingSystem = span.attributes.find(a => a.key === 'messaging.system')?.value?.stringValue || span.attributes.find(a => a.key === 'messaging.system')?.value;
 
     if (httpMethod) inlineAttributes.push({ label: httpMethod, color: 'text-blue-400 bg-blue-500/10 border-blue-500/20' });
     if (httpStatus) {
@@ -152,6 +211,8 @@ function SpanNode({ span, depth, selectedSpanId, onSelect, traceDurationMs, trac
                           'text-emerald-400 bg-emerald-500/10 border-emerald-500/20';
       inlineAttributes.push({ label: httpStatus, color: statusColor });
     }
+    if (httpTarget) inlineAttributes.push({ label: httpTarget, color: 'text-slate-400 bg-slate-800/30 border-slate-700/30' });
+    if (rpcMethod) inlineAttributes.push({ label: rpcMethod, color: 'text-indigo-400 bg-indigo-500/10 border-indigo-500/20' });
     if (dbSystem) inlineAttributes.push({ label: dbSystem, color: 'text-purple-400 bg-purple-500/10 border-purple-500/20' });
     if (messagingSystem) inlineAttributes.push({ label: messagingSystem, color: 'text-cyan-400 bg-cyan-500/10 border-cyan-500/20' });
   }
@@ -167,14 +228,20 @@ function SpanNode({ span, depth, selectedSpanId, onSelect, traceDurationMs, trac
           "flex items-center py-1.5 px-2 cursor-pointer hover:bg-slate-800/50 transition-colors border-l-2 group relative overflow-hidden",
           isSelected ? "bg-slate-800 border-blue-500" : "border-transparent",
           isError && !isSelected ? "border-red-500/50" : "",
-          !isError && hasErrorDescendant && !isSelected ? "border-red-500/30 border-dashed" : "" // Error propagation trail
+          !isError && hasErrorDescendant && !isSelected ? "border-red-500/30 border-dashed" : "", // Error propagation trail
+          span.isOnCriticalPath && !isSelected ? "shadow-[0_0_15px_rgba(59,130,246,0.1)] border-blue-500/30" : "",
+          (span as any).isHighlighted ? "bg-blue-500/10 ring-1 ring-blue-500/30 shadow-[0_0_10px_rgba(59,130,246,0.1)]" : ""
         )}
         style={{ paddingLeft: `${depth * 16 + 8}px` }}
         onClick={() => onSelect(span)}
       >
         {/* Proportional Duration Bar */}
         <div 
-          className="absolute inset-y-0 bg-slate-700/20 pointer-events-none"
+          className="absolute inset-y-0 bg-white/5 pointer-events-none"
+          style={{ left: `${leftPercent}%`, width: `${widthPercent}%` }}
+        />
+        <div 
+          className="absolute bottom-0 h-0.5 bg-blue-500/30 pointer-events-none"
           style={{ left: `${leftPercent}%`, width: `${widthPercent}%` }}
         />
 
@@ -294,21 +361,22 @@ function Timeline({ roots, selectedSpanId, onSelect }: { roots: ProcessedSpan[],
                 <div 
                   className={cn(
                     "absolute h-4 rounded-sm transition-all group/bar",
-                    isError ? "bg-red-500/80" : getServiceColor(span.serviceName),
+                    isError ? "bg-red-500/80" : "",
                     isSelected ? "ring-1 ring-white" : ""
                   )}
                   style={{ 
                     left: `${leftPercent}%`, 
                     width: `${widthPercent}%`,
                     minWidth: '2px',
-                    opacity: isError ? 1 : 0.8
+                    opacity: isError ? 1 : 0.8,
+                    backgroundColor: isError ? undefined : getServiceColor(span.serviceName)
                   }}
                 >
                   {/* Tooltip */}
                   <div className="absolute bottom-full mb-1 left-1/2 -translate-x-1/2 hidden group-hover/bar:flex flex-col items-center z-50 pointer-events-none">
                     <div className="bg-[#111218] text-slate-200 text-xs rounded py-1.5 px-2.5 shadow-xl border border-slate-800 whitespace-nowrap">
                       <div className="font-medium text-slate-100 flex items-center gap-1.5">
-                        <span className={cn("w-1.5 h-1.5 rounded-full", isError ? "bg-red-500" : getServiceColor(span.serviceName))} />
+                        <span className={cn("w-1.5 h-1.5 rounded-full", isError ? "bg-red-500" : "")} style={{ backgroundColor: isError ? undefined : getServiceColor(span.serviceName) }} />
                         {span.name}
                       </div>
                       <div className="text-slate-400 mt-1 flex items-center justify-between gap-4">
@@ -353,13 +421,30 @@ function SpanDetails({ span, onClose }: { span: ProcessedSpan | null, onClose: (
           {isError && <span className="w-2 h-2 rounded-full bg-red-500" />}
           {span.name}
         </h2>
-        <button 
-          onClick={onClose}
-          className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded transition-colors"
-          title="Close details"
-        >
-          <X size={18} />
-        </button>
+        <div className="flex items-center gap-2">
+          <button 
+            onClick={() => {
+              const blob = new Blob([JSON.stringify(span, null, 2)], { type: 'application/json' });
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement('a');
+              a.href = url;
+              a.download = `trace-${span.traceId}-span-${span.spanId}.json`;
+              a.click();
+              URL.revokeObjectURL(url);
+            }}
+            className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded transition-colors"
+            title="Download Span JSON"
+          >
+            <Download size={18} />
+          </button>
+          <button 
+            onClick={onClose}
+            className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded transition-colors"
+            title="Close details"
+          >
+            <X size={18} />
+          </button>
+        </div>
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 space-y-6">
@@ -437,7 +522,7 @@ function SpanDetails({ span, onClose }: { span: ProcessedSpan | null, onClose: (
   );
 }
 
-function TraceGroup({ traceId, roots, activeTab, selectedSpanId, onSelect }: { traceId: string, roots: ProcessedSpan[], activeTab: 'tree' | 'timeline', selectedSpanId: string | null, onSelect: (span: ProcessedSpan) => void }) {
+function TraceGroup({ traceId, roots, activeTab, selectedSpanId, onSelect }: { traceId: string, roots: ProcessedSpan[], activeTab: string, selectedSpanId: string | null, onSelect: (span: ProcessedSpan) => void }) {
   const [expanded, setExpanded] = useState(true);
 
   // Calculate summary
@@ -572,7 +657,7 @@ export default function App() {
   const [rawSpans, setRawSpans] = useState<Span[]>([]);
   const [isConnected, setIsConnected] = useState(false);
   const [selectedSpanId, setSelectedSpanId] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'tree' | 'timeline'>('tree');
+  const [activeTab, setActiveTab] = useState<'tree' | 'timeline' | 'topology' | 'flame'>('tree');
   
   const [filterName, setFilterName] = useState('');
   const [filterTraceId, setFilterTraceId] = useState('');
@@ -580,6 +665,7 @@ export default function App() {
   const [filterStatus, setFilterStatus] = useState<'all' | 'success' | 'error'>('all');
   const [groupByTrace, setGroupByTrace] = useState(true);
   const [globalSearch, setGlobalSearch] = useState('');
+  const [searchHighlightOnly, setSearchHighlightOnly] = useState(true);
 
   useEffect(() => {
     // Fetch existing traces
@@ -609,8 +695,45 @@ export default function App() {
 
     return () => {
       socket.disconnect();
+      window.removeEventListener('keydown', handleKeyDown);
     };
-  }, []);
+  }, [selectedSpanId, groupedTraces]);
+
+  const handleKeyDown = (e: KeyboardEvent) => {
+    if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+
+    if (e.key === 'j') {
+      // Find next trace/span
+      navigateSelection(1);
+    } else if (e.key === 'k') {
+      navigateSelection(-1);
+    } else if (e.key === 'Escape') {
+      setSelectedSpanId(null);
+    }
+  };
+
+  const navigateSelection = (direction: number) => {
+    // Basic trace navigation for now
+    if (groupedTraces.length === 0) return;
+    const currentIndex = selectedSpanId 
+      ? groupedTraces.findIndex(g => g.roots.some(r => r.spanId === selectedSpanId || findInTree(r, selectedSpanId)))
+      : -1;
+    
+    const nextIndex = Math.max(0, Math.min(groupedTraces.length - 1, currentIndex + direction));
+    const nextTrace = groupedTraces[nextIndex];
+    if (nextTrace && nextTrace.roots.length > 0) {
+      setSelectedSpanId(nextTrace.roots[0].spanId);
+    }
+  };
+
+  const findInTree = (node: ProcessedSpan, id: string): ProcessedSpan | null => {
+    if (node.spanId === id) return node;
+    for (const child of node.children) {
+      const found = findInTree(child, id);
+      if (found) return found;
+    }
+    return null;
+  };
 
   const clearTraces = () => {
     fetch('/api/clear', { method: 'POST' });
@@ -619,14 +742,16 @@ export default function App() {
   const spanTree = useMemo(() => buildSpanTree(rawSpans), [rawSpans]);
   
   const filteredSpanTree = useMemo(() => {
-    if (!filterName && !filterMinDuration && filterStatus === 'all' && !filterTraceId && !globalSearch) {
+    const isSearching = !!globalSearch;
+    const searchLower = globalSearch.toLowerCase();
+    
+    if (!filterName && !filterMinDuration && filterStatus === 'all' && !filterTraceId && !isSearching) {
       return spanTree;
     }
 
     const minDur = filterMinDuration ? parseFloat(filterMinDuration) : 0;
     const nameLower = filterName.toLowerCase();
     const traceIdLower = filterTraceId.toLowerCase();
-    const globalSearchLower = globalSearch.toLowerCase();
 
     const filterNode = (node: ProcessedSpan): ProcessedSpan | null => {
       const children = node.children
@@ -643,27 +768,36 @@ export default function App() {
       const matchesTraceId = !traceIdLower || node.traceId.toLowerCase().includes(traceIdLower);
       
       let matchesGlobal = true;
-      if (globalSearchLower) {
-        const inName = node.name.toLowerCase().includes(globalSearchLower);
-        const inTraceId = node.traceId.toLowerCase().includes(globalSearchLower);
+      let isSearchHighlight = false;
+
+      if (isSearching) {
+        const inName = node.name.toLowerCase().includes(searchLower);
+        const inTraceId = node.traceId.toLowerCase().includes(searchLower);
         const inAttributes = node.attributes?.some(attr => 
-          attr.key.toLowerCase().includes(globalSearchLower) || 
-          String(attr.value).toLowerCase().includes(globalSearchLower)
+          attr.key.toLowerCase().includes(searchLower) || 
+          String(attr.value).toLowerCase().includes(searchLower)
         ) || false;
-        matchesGlobal = inName || inTraceId || inAttributes;
+        
+        isSearchHighlight = inName || inTraceId || inAttributes;
+        matchesGlobal = isSearchHighlight;
       }
 
-      const matchesSelf = matchesStatus && matchesName && matchesDuration && matchesTraceId && matchesGlobal;
+      const matchesSelf = matchesStatus && matchesName && matchesDuration && matchesTraceId && (searchHighlightOnly ? true : matchesGlobal);
 
       if (matchesSelf || children.length > 0) {
-        return { ...node, children };
+        return { 
+          ...node, 
+          children,
+          // Store highlight state in the node for UI rendering
+          ...(isSearching ? { isHighlighted: isSearchHighlight } : {})
+        } as any;
       }
 
       return null;
     };
 
     return spanTree.map(filterNode).filter((n): n is ProcessedSpan => n !== null);
-  }, [spanTree, filterName, filterMinDuration, filterStatus, filterTraceId, globalSearch]);
+  }, [spanTree, filterName, filterMinDuration, filterStatus, filterTraceId, globalSearch, searchHighlightOnly]);
   
   const groupedTraces = useMemo(() => {
     const groups = new Map<string, ProcessedSpan[]>();
@@ -679,6 +813,33 @@ export default function App() {
       return { traceId, roots, minStartTime };
     }).sort((a, b) => b.minStartTime - a.minStartTime);
   }, [filteredSpanTree]);
+  const performanceMetrics = useMemo(() => {
+    if (groupedTraces.length === 0) return null;
+    const durations = groupedTraces.map(g => {
+        let maxEnd = -Infinity;
+        let minStart = Infinity;
+        const traverse = (n: ProcessedSpan) => {
+            if (n.startTimeMs < minStart) minStart = n.startTimeMs;
+            const end = n.startTimeMs + n.durationMs;
+            if (end > maxEnd) maxEnd = end;
+            n.children.forEach(traverse);
+        };
+        g.roots.forEach(traverse);
+        return maxEnd - minStart;
+    }).sort((a, b) => a - b);
+
+    const getP = (p: number) => {
+        const idx = Math.floor(durations.length * p);
+        return durations[idx] || 0;
+    };
+
+    return {
+        p50: getP(0.5),
+        p90: getP(0.9),
+        p99: getP(0.99),
+        count: durations.length
+    };
+  }, [groupedTraces]);
 
   const selectedSpan = useMemo(() => {
     if (!selectedSpanId) return null;
@@ -708,8 +869,8 @@ export default function App() {
           </div>
         </div>
 
-        <div className="flex-1 max-w-xl mx-8">
-          <div className="relative">
+        <div className="flex-1 max-w-xl mx-8 flex items-center gap-2">
+          <div className="relative flex-1">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" size={16} />
             <input
               type="text"
@@ -719,6 +880,16 @@ export default function App() {
               className="w-full bg-[#0B0C10] border border-slate-700/50 rounded-md pl-10 pr-4 py-1.5 text-sm text-slate-200 placeholder:text-slate-500 focus:outline-none focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/50 transition-all"
             />
           </div>
+          <button 
+            onClick={() => setSearchHighlightOnly(!searchHighlightOnly)}
+            className={cn(
+              "p-1.5 rounded border text-[10px] font-bold uppercase transition-all whitespace-nowrap",
+              searchHighlightOnly ? "bg-blue-600/20 border-blue-500/50 text-blue-400" : "bg-slate-800 border-slate-700 text-slate-500"
+            )}
+            title="Toggle between filtering out non-matches and just highlighting them"
+          >
+            {searchHighlightOnly ? "Highlight Mode" : "Filter Mode"}
+          </button>
         </div>
         
         <div className="flex items-center gap-2">
@@ -823,6 +994,26 @@ export default function App() {
                 <Activity size={14} />
                 Timeline
               </button>
+              <button 
+                className={cn(
+                  "px-3 py-1.5 text-sm font-medium rounded-md transition-colors flex items-center gap-2 ml-1",
+                  activeTab === 'topology' ? "bg-slate-800 text-white" : "text-slate-400 hover:text-slate-200"
+                )}
+                onClick={() => setActiveTab('topology')}
+              >
+                <Share2 size={14} />
+                Topology
+              </button>
+              <button 
+                className={cn(
+                  "px-3 py-1.5 text-sm font-medium rounded-md transition-colors flex items-center gap-2 ml-1",
+                  activeTab === 'flame' ? "bg-slate-800 text-white" : "text-slate-400 hover:text-slate-200"
+                )}
+                onClick={() => setActiveTab('flame')}
+              >
+                <Flame size={14} />
+                Flame Graph
+              </button>
             </div>
             <div className="flex items-center gap-2 text-xs">
               <label className="flex items-center gap-1.5 text-slate-300 cursor-pointer hover:text-white mr-2">
@@ -867,7 +1058,41 @@ export default function App() {
             </div>
           </div>
           
-          <div className="flex-1 overflow-auto p-2">
+          <TraceScatterPlot 
+            traces={groupedTraces} 
+            onSelectTrace={(traceId) => {
+              setFilterTraceId(traceId);
+              // Find the first span of this trace to select it
+              const trace = groupedTraces.find(t => t.traceId === traceId);
+              if (trace && trace.roots.length > 0) {
+                  setSelectedSpanId(trace.roots[0].spanId);
+              }
+            }} 
+          />
+          
+          <div className="flex-1 overflow-auto p-4 custom-scrollbar">
+            {/* Metrics Dashboard */}
+            {performanceMetrics && (
+              <div className="mb-6 grid grid-cols-4 gap-3">
+                <div className="bg-[#111218] border border-slate-800 rounded-lg p-3 shadow-inner">
+                  <div className="text-[10px] text-slate-500 uppercase font-bold tracking-tighter mb-1">Total Traces</div>
+                  <div className="text-xl font-mono text-slate-300">{performanceMetrics.count}</div>
+                </div>
+                <div className="bg-[#111218] border border-slate-800 rounded-lg p-3 shadow-inner border-l-blue-500/50">
+                  <div className="text-[10px] text-blue-500/70 uppercase font-bold tracking-tighter mb-1">P50 Latency</div>
+                  <div className="text-xl font-mono text-slate-300">{performanceMetrics.p50.toFixed(1)}ms</div>
+                </div>
+                <div className="bg-[#111218] border border-slate-800 rounded-lg p-3 shadow-inner border-l-amber-500/50">
+                  <div className="text-[10px] text-amber-500/70 uppercase font-bold tracking-tighter mb-1">P90 Latency</div>
+                  <div className="text-xl font-mono text-slate-300">{performanceMetrics.p90.toFixed(1)}ms</div>
+                </div>
+                <div className="bg-[#111218] border border-slate-800 rounded-lg p-3 shadow-inner border-l-red-500/50">
+                  <div className="text-[10px] text-red-500/70 uppercase font-bold tracking-tighter mb-1">P99 Latency</div>
+                  <div className="text-xl font-mono text-slate-300">{performanceMetrics.p99.toFixed(1)}ms</div>
+                </div>
+              </div>
+            )}
+
             {rawSpans.length === 0 ? (
               <div className="h-full flex flex-col items-center justify-center text-slate-500 space-y-4">
                 <Activity size={48} className="opacity-20" />
@@ -920,8 +1145,16 @@ export default function App() {
                       );
                     })}
                   </div>
-                ) : (
+                ) : activeTab === 'timeline' ? (
                   <Timeline 
+                    roots={filteredSpanTree} 
+                    selectedSpanId={selectedSpanId}
+                    onSelect={(s) => setSelectedSpanId(s.spanId)}
+                  />
+                ) : activeTab === 'topology' ? (
+                  <ServiceGraph spans={filteredSpanTree} />
+                ) : (
+                  <FlameGraph 
                     roots={filteredSpanTree} 
                     selectedSpanId={selectedSpanId}
                     onSelect={(s) => setSelectedSpanId(s.spanId)}
