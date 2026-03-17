@@ -178,10 +178,20 @@ async function startServer() {
     const otlpApp = express();
     otlpApp.use(express.json({ limit: '50mb' }));
     otlpApp.use(cors());
-    otlpApp.post('/v1/traces', (req, res) => {
+    otlpApp.post('/v1/traces', async (req, res) => {
       const traceData = req.body;
       traces.push(traceData);
       io.emit('new_trace', traceData);
+
+      try {
+        const spans = extractSpans(traceData);
+        if (spans.length > 0) {
+          await storeTrace(traceData, spans);
+        }
+      } catch (err) {
+        console.error('Failed to store trace in database:', err);
+      }
+
       res.status(200).send({});
     });
     otlpApp.listen(OTLP_PORT, "0.0.0.0", () => {

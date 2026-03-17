@@ -93,9 +93,6 @@ export async function storeTrace(traceData: OTLPTraceData, spans: Array<any>) {
   const rootService = spans[0]?.serviceName || 'unknown';
 
   try {
-    // Begin transaction
-    await db.query('BEGIN TRANSACTION;');
-
     // Store trace record
     await db.create(`traces:${traceId}`, {
       traceId,
@@ -116,10 +113,11 @@ export async function storeTrace(traceData: OTLPTraceData, spans: Array<any>) {
       const spanDurationMs = spanEndTime.getTime() - spanStartTime.getTime();
       const serviceName = span.serviceName || 'unknown';
 
+      // Create span record
       await db.create(`spans:${span.spanId}`, {
         spanId: span.spanId,
         traceId,
-        parentSpanId: span.parentSpanId,
+        parentSpanId: span.parentSpanId || null,
         serviceName,
         spanName: span.name,
         kind: span.kind,
@@ -131,17 +129,8 @@ export async function storeTrace(traceData: OTLPTraceData, spans: Array<any>) {
         isOnCriticalPath: span.isOnCriticalPath || false,
       });
 
-      // Update or create service record
-      const existingService = await db.query(`SELECT * FROM services WHERE name == '${serviceName}' LIMIT 1;`);
-      if (existingService[0]?.result?.length > 0) {
-        const service = existingService[0].result[0];
-        await db.update(`services:${serviceName}`, {
-          lastSeen: spanEndTime,
-          traceCount: service.traceCount + 1,
-          errorCount: service.errorCount + (span.status?.code === 2 ? 1 : 0),
-          avgDurationMs: (service.avgDurationMs * service.traceCount + spanDurationMs) / (service.traceCount + 1),
-        });
-      } else {
+      // Create or update service record
+      try {
         await db.create(`services:${serviceName}`, {
           name: serviceName,
           firstSeen: spanStartTime,
@@ -150,6 +139,17 @@ export async function storeTrace(traceData: OTLPTraceData, spans: Array<any>) {
           errorCount: span.status?.code === 2 ? 1 : 0,
           avgDurationMs: spanDurationMs,
         });
+      } catch {
+        // Service exists, update it
+        await db.query(
+          `UPDATE services SET lastSeen = $ts, traceCount += 1, errorCount += $err, avgDurationMs = (avgDurationMs * (traceCount - 1) + $dur) / traceCount WHERE id == $id;`,
+          {
+            ts: spanEndTime.toISOString(),
+            err: span.status?.code === 2 ? 1 : 0,
+            dur: spanDurationMs,
+            id: `services:${serviceName}`,
+          }
+        );
       }
 
       // Record service-to-service calls
@@ -157,19 +157,10 @@ export async function storeTrace(traceData: OTLPTraceData, spans: Array<any>) {
         const parentSpan = spans.find(s => s.spanId === span.parentSpanId);
         if (parentSpan && parentSpan.serviceName !== serviceName) {
           const parentService = parentSpan.serviceName || 'unknown';
-          const edgeId = `${parentService}->${serviceName}`;
-          const existingEdge = await db.query(`SELECT * FROM service_calls WHERE fromService == '${parentService}' AND toService == '${serviceName}' LIMIT 1;`);
+          const callId = `service_calls:${parentService}:${serviceName}`;
 
-          if (existingEdge[0]?.result?.length > 0) {
-            const edge = existingEdge[0].result[0];
-            await db.update(edge.id, {
-              callCount: edge.callCount + 1,
-              errorCount: edge.errorCount + (span.status?.code === 2 ? 1 : 0),
-              lastObserved: spanEndTime,
-              avgDurationMs: (edge.avgDurationMs * edge.callCount + spanDurationMs) / (edge.callCount + 1),
-            });
-          } else {
-            await db.create(`service_calls:${edgeId}`, {
+          try {
+            await db.create(callId, {
               fromService: parentService,
               toService: serviceName,
               callCount: 1,
@@ -177,15 +168,23 @@ export async function storeTrace(traceData: OTLPTraceData, spans: Array<any>) {
               lastObserved: spanEndTime,
               avgDurationMs: spanDurationMs,
             });
+          } catch {
+            // Edge exists, update it
+            await db.query(
+              `UPDATE service_calls SET callCount += 1, errorCount += $err, lastObserved = $ts, avgDurationMs = (avgDurationMs * (callCount - 1) + $dur) / callCount WHERE id == $id;`,
+              {
+                err: span.status?.code === 2 ? 1 : 0,
+                ts: spanEndTime.toISOString(),
+                dur: spanDurationMs,
+                id: callId,
+              }
+            );
           }
         }
       }
     }
-
-    // Commit transaction
-    await db.query('COMMIT TRANSACTION;');
   } catch (err) {
-    await db.query('CANCEL TRANSACTION;');
+    console.error('Error storing trace:', err);
     throw err;
   }
 }
