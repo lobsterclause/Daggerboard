@@ -1,0 +1,5 @@
+{
+  "name": "Daggerboard",
+  "description": "Standalone Dagger Dashboard with real-time OTLP trace visualization.",
+  "requestFramePermissions": []
+}
