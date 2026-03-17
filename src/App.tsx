@@ -1,7 +1,10 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { io } from 'socket.io-client';
 import { OTLPTraceData, Span, ProcessedSpan } from './types';
-import { Activity, Clock, Server, Play, RotateCcw, Trash2, AlertCircle, X, Search, Monitor, Cpu, Database, ArrowRightLeft, Layers } from 'lucide-react';
+import { Activity, Clock, Server, Play, RotateCcw, Trash2, AlertCircle, X, Search, Monitor, Cpu, Database, ArrowRightLeft, Layers, Share2, Flame } from 'lucide-react';
+import { ServiceGraph } from './components/ServiceGraph';
+import { FlameGraph } from './components/FlameGraph';
+import { TraceScatterPlot } from './components/TraceScatterPlot';
 import { format } from 'date-fns';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -11,17 +14,43 @@ function cn(...inputs: ClassValue[]) {
 }
 
 const SERVICE_COLORS = [
-  'bg-blue-500', 'bg-emerald-500', 'bg-amber-500', 'bg-purple-500', 
-  'bg-pink-500', 'bg-cyan-500', 'bg-orange-500', 'bg-indigo-500'
+  '#3b82f6', // blue-500
+  '#10b981', // emerald-500
+  '#f59e0b', // amber-500
+  '#8b5cf6', // purple-500
+  '#ec4899', // pink-500
+  '#06b6d4', // cyan-500
+  '#f97316', // orange-500
+  '#6366f1', // indigo-500
+  '#84cc16', // lime-500
+  '#14b8a6', // teal-500
+  '#0ea5e9', // sky-500
+  '#d946ef', // fuchsia-500
+  '#f43f5e', // rose-500
 ];
 
-function getServiceColor(serviceName: string | undefined): string {
-  if (!serviceName) return 'bg-slate-500';
+export function getServiceColor(serviceName: string | undefined): string {
+  if (!serviceName) return '#64748b'; // slate-500
   let hash = 0;
   for (let i = 0; i < serviceName.length; i++) {
     hash = serviceName.charCodeAt(i) + ((hash << 5) - hash);
   }
   return SERVICE_COLORS[Math.abs(hash) % SERVICE_COLORS.length];
+}
+
+// Tailind class mapping for the old components that still use it
+const SERVICE_COLOR_CLASSES = [
+  'bg-blue-500', 'bg-emerald-500', 'bg-amber-500', 'bg-purple-500', 
+  'bg-pink-500', 'bg-cyan-500', 'bg-orange-500', 'bg-indigo-500'
+];
+
+function getServiceColorClass(serviceName: string | undefined): string {
+  if (!serviceName) return 'bg-slate-500';
+  let hash = 0;
+  for (let i = 0; i < serviceName.length; i++) {
+    hash = serviceName.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  return SERVICE_COLOR_CLASSES[Math.abs(hash) % SERVICE_COLOR_CLASSES.length];
 }
 
 // Helper to parse OTLP JSON into a flat list of spans
@@ -78,6 +107,7 @@ function buildSpanTree(spans: Span[]): ProcessedSpan[] {
       durationMs: endTimeMs - startTimeMs,
       serviceName,
       hasErrorDescendant: false,
+      isOnCriticalPath: false,
     });
   }
 
@@ -90,20 +120,47 @@ function buildSpanTree(spans: Span[]): ProcessedSpan[] {
     }
   }
 
-  // Sort children by start time and compute hasErrorDescendant
+  // Sort children by start time and compute hasErrorDescendant & isOnCriticalPath
   const processTree = (nodes: ProcessedSpan[]): boolean => {
     nodes.sort((a, b) => a.startTimeMs - b.startTimeMs);
     let anyError = false;
+    
+    // Find child with maximum duration to mark as critical path
+    let maxDurChild: ProcessedSpan | null = null;
+    let maxDur = -1;
+
     for (const node of nodes) {
+      if (node.durationMs > maxDur) {
+        maxDur = node.durationMs;
+        maxDurChild = node;
+      }
+      
       const childrenHasError = processTree(node.children);
       node.hasErrorDescendant = childrenHasError;
       if (node.status?.code === 2 || childrenHasError) {
         anyError = true;
       }
     }
+    
+    if (maxDurChild) {
+        maxDurChild.isOnCriticalPath = true;
+    }
+
     return anyError;
   };
+  
   processTree(roots);
+  
+  // Mark roots as critical path by default if they are the longest
+  let maxRoot: ProcessedSpan | null = null;
+  let maxRootDur = -1;
+  roots.forEach(r => {
+      if (r.durationMs > maxRootDur) {
+          maxRootDur = r.durationMs;
+          maxRoot = r;
+      }
+  });
+  if (maxRoot) (maxRoot as ProcessedSpan).isOnCriticalPath = true;
 
   return roots;
 }
@@ -139,10 +196,12 @@ function SpanNode({ span, depth, selectedSpanId, onSelect, traceDurationMs, trac
   // Extract key attributes for inline badges
   const inlineAttributes = [];
   if (span.attributes) {
-    const httpMethod = span.attributes.find(a => a.key === 'http.method')?.value;
-    const httpStatus = span.attributes.find(a => a.key === 'http.status_code')?.value;
-    const dbSystem = span.attributes.find(a => a.key === 'db.system')?.value;
-    const messagingSystem = span.attributes.find(a => a.key === 'messaging.system')?.value;
+    const httpMethod = span.attributes.find(a => a.key === 'http.method')?.value?.stringValue || span.attributes.find(a => a.key === 'http.method')?.value;
+    const httpStatus = span.attributes.find(a => a.key === 'http.status_code')?.value?.intValue || span.attributes.find(a => a.key === 'http.status_code')?.value;
+    const httpTarget = span.attributes.find(a => a.key === 'http.target' || a.key === 'url.path')?.value?.stringValue || span.attributes.find(a => a.key === 'http.target' || a.key === 'url.path')?.value;
+    const rpcMethod = span.attributes.find(a => a.key === 'rpc.method')?.value?.stringValue || span.attributes.find(a => a.key === 'rpc.method')?.value;
+    const dbSystem = span.attributes.find(a => a.key === 'db.system')?.value?.stringValue || span.attributes.find(a => a.key === 'db.system')?.value;
+    const messagingSystem = span.attributes.find(a => a.key === 'messaging.system')?.value?.stringValue || span.attributes.find(a => a.key === 'messaging.system')?.value;
 
     if (httpMethod) inlineAttributes.push({ label: httpMethod, color: 'text-blue-400 bg-blue-500/10 border-blue-500/20' });
     if (httpStatus) {
@@ -152,6 +211,8 @@ function SpanNode({ span, depth, selectedSpanId, onSelect, traceDurationMs, trac
                           'text-emerald-400 bg-emerald-500/10 border-emerald-500/20';
       inlineAttributes.push({ label: httpStatus, color: statusColor });
     }
+    if (httpTarget) inlineAttributes.push({ label: httpTarget, color: 'text-slate-400 bg-slate-800/30 border-slate-700/30' });
+    if (rpcMethod) inlineAttributes.push({ label: rpcMethod, color: 'text-indigo-400 bg-indigo-500/10 border-indigo-500/20' });
     if (dbSystem) inlineAttributes.push({ label: dbSystem, color: 'text-purple-400 bg-purple-500/10 border-purple-500/20' });
     if (messagingSystem) inlineAttributes.push({ label: messagingSystem, color: 'text-cyan-400 bg-cyan-500/10 border-cyan-500/20' });
   }
@@ -167,14 +228,19 @@ function SpanNode({ span, depth, selectedSpanId, onSelect, traceDurationMs, trac
           "flex items-center py-1.5 px-2 cursor-pointer hover:bg-slate-800/50 transition-colors border-l-2 group relative overflow-hidden",
           isSelected ? "bg-slate-800 border-blue-500" : "border-transparent",
           isError && !isSelected ? "border-red-500/50" : "",
-          !isError && hasErrorDescendant && !isSelected ? "border-red-500/30 border-dashed" : "" // Error propagation trail
+          !isError && hasErrorDescendant && !isSelected ? "border-red-500/30 border-dashed" : "", // Error propagation trail
+          span.isOnCriticalPath && !isSelected ? "shadow-[0_0_15px_rgba(59,130,246,0.1)] border-blue-500/30" : ""
         )}
         style={{ paddingLeft: `${depth * 16 + 8}px` }}
         onClick={() => onSelect(span)}
       >
         {/* Proportional Duration Bar */}
         <div 
-          className="absolute inset-y-0 bg-slate-700/20 pointer-events-none"
+          className="absolute inset-y-0 bg-white/5 pointer-events-none"
+          style={{ left: `${leftPercent}%`, width: `${widthPercent}%` }}
+        />
+        <div 
+          className="absolute bottom-0 h-0.5 bg-blue-500/30 pointer-events-none"
           style={{ left: `${leftPercent}%`, width: `${widthPercent}%` }}
         />
 
@@ -294,21 +360,22 @@ function Timeline({ roots, selectedSpanId, onSelect }: { roots: ProcessedSpan[],
                 <div 
                   className={cn(
                     "absolute h-4 rounded-sm transition-all group/bar",
-                    isError ? "bg-red-500/80" : getServiceColor(span.serviceName),
+                    isError ? "bg-red-500/80" : "",
                     isSelected ? "ring-1 ring-white" : ""
                   )}
                   style={{ 
                     left: `${leftPercent}%`, 
                     width: `${widthPercent}%`,
                     minWidth: '2px',
-                    opacity: isError ? 1 : 0.8
+                    opacity: isError ? 1 : 0.8,
+                    backgroundColor: isError ? undefined : getServiceColor(span.serviceName)
                   }}
                 >
                   {/* Tooltip */}
                   <div className="absolute bottom-full mb-1 left-1/2 -translate-x-1/2 hidden group-hover/bar:flex flex-col items-center z-50 pointer-events-none">
                     <div className="bg-[#111218] text-slate-200 text-xs rounded py-1.5 px-2.5 shadow-xl border border-slate-800 whitespace-nowrap">
                       <div className="font-medium text-slate-100 flex items-center gap-1.5">
-                        <span className={cn("w-1.5 h-1.5 rounded-full", isError ? "bg-red-500" : getServiceColor(span.serviceName))} />
+                        <span className={cn("w-1.5 h-1.5 rounded-full", isError ? "bg-red-500" : "")} style={{ backgroundColor: isError ? undefined : getServiceColor(span.serviceName) }} />
                         {span.name}
                       </div>
                       <div className="text-slate-400 mt-1 flex items-center justify-between gap-4">
@@ -437,7 +504,7 @@ function SpanDetails({ span, onClose }: { span: ProcessedSpan | null, onClose: (
   );
 }
 
-function TraceGroup({ traceId, roots, activeTab, selectedSpanId, onSelect }: { traceId: string, roots: ProcessedSpan[], activeTab: 'tree' | 'timeline', selectedSpanId: string | null, onSelect: (span: ProcessedSpan) => void }) {
+function TraceGroup({ traceId, roots, activeTab, selectedSpanId, onSelect }: { traceId: string, roots: ProcessedSpan[], activeTab: string, selectedSpanId: string | null, onSelect: (span: ProcessedSpan) => void }) {
   const [expanded, setExpanded] = useState(true);
 
   // Calculate summary
@@ -572,7 +639,7 @@ export default function App() {
   const [rawSpans, setRawSpans] = useState<Span[]>([]);
   const [isConnected, setIsConnected] = useState(false);
   const [selectedSpanId, setSelectedSpanId] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'tree' | 'timeline'>('tree');
+  const [activeTab, setActiveTab] = useState<'tree' | 'timeline' | 'topology' | 'flame'>('tree');
   
   const [filterName, setFilterName] = useState('');
   const [filterTraceId, setFilterTraceId] = useState('');
@@ -823,6 +890,26 @@ export default function App() {
                 <Activity size={14} />
                 Timeline
               </button>
+              <button 
+                className={cn(
+                  "px-3 py-1.5 text-sm font-medium rounded-md transition-colors flex items-center gap-2 ml-1",
+                  activeTab === 'topology' ? "bg-slate-800 text-white" : "text-slate-400 hover:text-slate-200"
+                )}
+                onClick={() => setActiveTab('topology')}
+              >
+                <Share2 size={14} />
+                Topology
+              </button>
+              <button 
+                className={cn(
+                  "px-3 py-1.5 text-sm font-medium rounded-md transition-colors flex items-center gap-2 ml-1",
+                  activeTab === 'flame' ? "bg-slate-800 text-white" : "text-slate-400 hover:text-slate-200"
+                )}
+                onClick={() => setActiveTab('flame')}
+              >
+                <Flame size={14} />
+                Flame Graph
+              </button>
             </div>
             <div className="flex items-center gap-2 text-xs">
               <label className="flex items-center gap-1.5 text-slate-300 cursor-pointer hover:text-white mr-2">
@@ -866,6 +953,18 @@ export default function App() {
               </select>
             </div>
           </div>
+          
+          <TraceScatterPlot 
+            traces={groupedTraces} 
+            onSelectTrace={(traceId) => {
+              setFilterTraceId(traceId);
+              // Find the first span of this trace to select it
+              const trace = groupedTraces.find(t => t.traceId === traceId);
+              if (trace && trace.roots.length > 0) {
+                  setSelectedSpanId(trace.roots[0].spanId);
+              }
+            }} 
+          />
           
           <div className="flex-1 overflow-auto p-2">
             {rawSpans.length === 0 ? (
@@ -920,8 +1019,16 @@ export default function App() {
                       );
                     })}
                   </div>
-                ) : (
+                ) : activeTab === 'timeline' ? (
                   <Timeline 
+                    roots={filteredSpanTree} 
+                    selectedSpanId={selectedSpanId}
+                    onSelect={(s) => setSelectedSpanId(s.spanId)}
+                  />
+                ) : activeTab === 'topology' ? (
+                  <ServiceGraph spans={filteredSpanTree} />
+                ) : (
+                  <FlameGraph 
                     roots={filteredSpanTree} 
                     selectedSpanId={selectedSpanId}
                     onSelect={(s) => setSelectedSpanId(s.spanId)}

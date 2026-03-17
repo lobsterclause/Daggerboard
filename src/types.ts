@@ -43,4 +43,5 @@ export interface ProcessedSpan extends Span {
   endTimeMs: number;
   hasErrorDescendant?: boolean;
   serviceName?: string;
+  isOnCriticalPath?: boolean;
 }

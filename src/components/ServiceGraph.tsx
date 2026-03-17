@@ -54,10 +54,11 @@ export function ServiceGraph({ spans }: ServiceGraphProps) {
         style: {
           background: '#1e293b',
           color: '#f8fafc',
-          border: '1px solid #475569',
+          border: `2px solid ${getServiceColor(service)}`,
           borderRadius: '8px',
           padding: '10px',
           fontWeight: 'bold',
+          boxShadow: `0 0 10px ${getServiceColor(service)}44`,
         }
       };
     });
