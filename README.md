@@ -1,5 +1,5 @@
 <div align="center">
-<img width="1200" alt="Daggerboard Banner" src=".gemini/antigravity/brain/73d51de5-fb86-485e-aacf-36565ebcbb56/daggerboard_banner_png_1773722258174.png" />
+<img width="1200" alt="Daggerboard — See every trace. Find the critical path." src="docs/assets/daggerboard-banner.png" />
 
 # Daggerboard
 
